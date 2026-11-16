@@ -203,8 +203,12 @@ fn main() -> anyhow::Result<()> {
 
     // set up sentry connection
     // this guard does nothing is sentry_url is None
+    let sentry_release = option_env!("WEB3_PROXY_BUILD_REVISION")
+        .filter(|revision| !revision.is_empty())
+        .map(|revision| Cow::Owned(format!("web3-proxy@{revision}")))
+        .or_else(|| sentry::release_name!());
     let mut sentry_options = sentry::ClientOptions::new()
-        .maybe_release(sentry::release_name!())
+        .maybe_release(sentry_release)
         .environment(sentry_env)
         // TODO: make sample_rate configurable!
         .sample_rate(1.0)

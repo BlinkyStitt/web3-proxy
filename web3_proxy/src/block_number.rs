@@ -333,8 +333,8 @@ impl RequestBlocks {
         }
 
         match request.method.as_ref() {
-            "debug_traceTransaction" => {
-                // TODO: make sure re-orgs work properly!
+            "trace_transaction" | "debug_traceTransaction" => {
+                // These methods identify a transaction by hash.
                 Ok(Self::None)
             }
             "eth_blockNumber" => Ok(Self::Point {
@@ -514,6 +514,20 @@ mod test {
         };
         header.inner.number = number;
         header
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn transaction_hash_traces_preserve_params_without_pinning_to_head() {
+        let head = BlockHeader::new(Arc::new(block(100)));
+        let params = json!([B256::repeat_byte(0x42)]);
+        for method in ["trace_transaction", "debug_traceTransaction"] {
+            let mut request = SingleRequest::new(7.into(), method.into(), params.clone()).unwrap();
+            let blocks = RequestBlocks::try_new(&mut request, Some(&head), None)
+                .await
+                .unwrap();
+            assert_eq!(blocks, RequestBlocks::None);
+            assert_eq!(request.params, params);
+        }
     }
 
     #[test_log::test(tokio::test)]

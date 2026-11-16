@@ -2,12 +2,18 @@ use web3_proxy::prelude::*;
 
 use anyhow::Context;
 use argh::FromArgs;
-use sentry::types::Dsn;
+use sentry::transports::ReqwestHttpTransportOptions;
+use sentry::types::{Dsn, Scheme};
+use sentry::{ClientInitGuard, ClientOptions, Transport, TransportFactory, TransportOptions};
 use std::{
     borrow::Cow,
     fs,
     path::{absolute, PathBuf},
-    sync::atomic::{self, AtomicUsize},
+    sync::{
+        atomic::{self, AtomicUsize},
+        Arc,
+    },
+    time::Duration,
 };
 use tokio::runtime;
 use tracing::{info, warn};
@@ -36,7 +42,7 @@ const DEFAULT_LOG_DIRECTIVES: &[&str] = &[
 ];
 
 #[cfg(feature = "deadlock_detection")]
-use {parking_lot::deadlock, std::thread, tokio::time::Duration};
+use {parking_lot::deadlock, std::thread};
 
 #[derive(Debug, FromArgs)]
 /// Command line interface for admins to interact with web3_proxy
@@ -90,6 +96,49 @@ where
     enabled
         .then(sentry_tracing::layer)
         .with_filter(filter.and(events))
+}
+
+const SENTRY_UPLOAD_TIMEOUT: Duration = Duration::from_secs(2);
+
+struct SentryTransport(reqwest::Client);
+
+impl TransportFactory for SentryTransport {
+    fn create_transport_with_options(&self, options: TransportOptions) -> Arc<dyn Transport> {
+        Arc::new(
+            ReqwestHttpTransportOptions::from(options)
+                .with_client(self.0.clone())
+                .build(),
+        )
+    }
+}
+
+fn initialize_sentry(configured_dsn: Option<Dsn>) -> Option<ClientInitGuard> {
+    let dsn = configured_dsn.or_else(|| std::env::var("SENTRY_DSN").ok()?.parse().ok())?;
+    if dsn.scheme() != Scheme::Https {
+        eprintln!("Sentry reporting disabled: the DSN must use HTTPS");
+        return None;
+    }
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .tls_danger_accept_invalid_certs(false)
+        .timeout(SENTRY_UPLOAD_TIMEOUT)
+        .build()
+        .ok()?;
+    let release = option_env!("WEB3_PROXY_BUILD_REVISION")
+        .filter(|revision| !revision.is_empty())
+        .map(|revision| Cow::Owned(format!("web3-proxy@{revision}")))
+        .or_else(|| sentry::release_name!());
+    Some(sentry::init(
+        ClientOptions::from(dsn)
+            .maybe_release(release)
+            .environment(
+                std::env::var("SENTRY_ENV")
+                    .map(Cow::from)
+                    .unwrap_or("production".into()),
+            )
+            .transport(SentryTransport(client)),
+    ))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -196,26 +245,10 @@ fn main() -> anyhow::Result<()> {
         (None, None)
     };
 
-    // TODO: put sentry behind a feature
-    let sentry_env = std::env::var("SENTRY_ENV")
-        .map(Cow::from)
-        .unwrap_or("production".into());
-
-    // set up sentry connection
-    // this guard does nothing is sentry_url is None
-    let sentry_release = option_env!("WEB3_PROXY_BUILD_REVISION")
-        .filter(|revision| !revision.is_empty())
-        .map(|revision| Cow::Owned(format!("web3-proxy@{revision}")))
-        .or_else(|| sentry::release_name!());
-    let mut sentry_options = sentry::ClientOptions::new()
-        .maybe_release(sentry_release)
-        .environment(sentry_env)
-        // TODO: make sample_rate configurable!
-        .sample_rate(1.0)
-        // TODO: make traces_sample_rate configurable! (its not yet available for our rust project)
-        .traces_sample_rate(0.0);
-    sentry_options.dsn = cli_config.sentry_url.clone();
-    let _sentry_guard = sentry::init(sentry_options);
+    let _sentry_guard = initialize_sentry(cli_config.sentry_url.clone());
+    let sentry_enabled = _sentry_guard
+        .as_ref()
+        .is_some_and(ClientInitGuard::is_enabled);
 
     sentry::configure_scope(|scope| {
         let chain_id = top_config.as_ref().map(|x| x.app.chain_id).unwrap_or(0);
@@ -234,7 +267,7 @@ fn main() -> anyhow::Result<()> {
     let env_filter = EnvFilter::builder().parse(rust_log)?;
     // A disabled client cannot collect events. Avoid the layer's per-span hub
     // and scope locks when Sentry is not configured.
-    let sentry_layer = optional_sentry_layer(_sentry_guard.is_enabled(), env_filter);
+    let sentry_layer = optional_sentry_layer(sentry_enabled, env_filter);
 
     // build a `Subscriber` by combining layers
     let tracing_registry = tracing_subscriber::registry()
@@ -252,10 +285,7 @@ fn main() -> anyhow::Result<()> {
 
     tracing_registry.init();
 
-    info!(
-        sentry_enabled = _sentry_guard.is_enabled(),
-        "Sentry error reporting configured"
-    );
+    info!(sentry_enabled, "Sentry error reporting configured");
     info!(%APP_USER_AGENT);
 
     // set up tokio's async runtime
@@ -309,8 +339,8 @@ fn main() -> anyhow::Result<()> {
                 command.main(top_config, top_config_path).await
             }
             SubCommand::Sentryd(command) => {
-                if cli_config.sentry_url.is_none() {
-                    warn!("sentry_url is not set; logs will only appear in this console");
+                if !sentry_enabled {
+                    warn!("Sentry is disabled; logs will only appear in this console");
                 }
                 command.main().await
             }

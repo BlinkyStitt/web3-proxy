@@ -41,9 +41,6 @@ const DEFAULT_LOG_DIRECTIVES: &[&str] = &[
     "latency::perf=off",
 ];
 
-#[cfg(feature = "deadlock_detection")]
-use {parking_lot::deadlock, std::thread};
-
 #[derive(Debug, FromArgs)]
 /// Command line interface for admins to interact with web3_proxy
 pub struct Web3ProxyCli {
@@ -154,30 +151,6 @@ fn main() -> anyhow::Result<()> {
 
     // this probably won't matter for us in docker, but better safe than sorry
     fdlimit::raise_fd_limit()?;
-
-    #[cfg(feature = "deadlock_detection")]
-    {
-        // spawn a thread for deadlock detection
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(10));
-            let deadlocks = deadlock::check_deadlock();
-            if deadlocks.is_empty() {
-                continue;
-            }
-
-            let mut msg = format!("{} deadlocks detected\n", deadlocks.len());
-
-            for (i, threads) in deadlocks.iter().enumerate() {
-                msg += &format!("Deadlock #{}", i);
-                for t in threads {
-                    msg += &format!("Thread Id {:#?}\n", t.thread_id());
-                    msg += &format!("{:#?}\n", t.backtrace());
-                }
-            }
-
-            panic!("{:#}", msg);
-        });
-    }
 
     // if RUST_LOG isn't set, configure a default
     let mut rust_log = match std::env::var("RUST_LOG") {

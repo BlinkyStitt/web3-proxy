@@ -7,23 +7,25 @@ async fn invalid_ancestry_and_unknown_results_survive_worker_restart() {
     let target = rpc.target(&server.url, "a");
     rpc.state
         .lock()
+        .unwrap()
         .replies
         .insert(B256::with_last_byte(1), ["INVALID"].into());
     let first = Worker::start(target.clone(), config::Mode::Inject).await;
     first.tx.send(work(1, 0, 1, config::Mode::Inject)).unwrap();
-    until(|| first.stats.lock().execution_targets["a"].invalid == 1).await;
-    rpc.state.lock().wrong_valid_hash = true;
+    until(|| first.stats.lock().unwrap().execution_targets["a"].invalid == 1).await;
+    rpc.state.lock().unwrap().wrong_valid_hash = true;
     first.tx.send(work(3, 0, 3, config::Mode::Inject)).unwrap();
-    until(|| first.stats.lock().execution_targets["a"].unknown == 1).await;
+    until(|| first.stats.lock().unwrap().execution_targets["a"].unknown == 1).await;
     first.finish().await;
-    rpc.state.lock().wrong_valid_hash = false;
+    rpc.state.lock().unwrap().wrong_valid_hash = false;
     let second = Worker::start(target, config::Mode::Inject).await;
     second.tx.send(work(2, 1, 2, config::Mode::Inject)).unwrap();
-    until(|| second.stats.lock().execution_targets["a"].skipped_invalid_ancestor == 1).await;
+    until(|| second.stats.lock().unwrap().execution_targets["a"].skipped_invalid_ancestor == 1)
+        .await;
     second.tx.send(work(4, 3, 4, config::Mode::Inject)).unwrap();
-    until(|| second.stats.lock().execution_targets["a"].valid == 1).await;
+    until(|| second.stats.lock().unwrap().execution_targets["a"].valid == 1).await;
     second.tx.send(work(3, 0, 3, config::Mode::Inject)).unwrap();
-    until(|| second.stats.lock().execution_targets["a"].suppressed_duplicate == 1).await;
+    until(|| second.stats.lock().unwrap().execution_targets["a"].suppressed_duplicate == 1).await;
     second.finish().await;
     assert_eq!(rpc.payload_hashes(), [1, 3, 4].map(B256::with_last_byte));
 }
@@ -86,7 +88,7 @@ async fn broken_storage_silent_source_bad_jwt_and_invalid_endpoints_leave_health
     local.announce("block", root, block.data.message.slot);
     until(|| {
         relay.snapshot()["execution_targets"]["good"]["valid"].as_u64() == Some(1)
-            && cl.state.lock().publications.len() == 1
+            && cl.state.lock().unwrap().publications.len() == 1
     })
     .await;
     until(|| relay.snapshot()["recording_dropped"].as_u64().unwrap() > 0).await;
@@ -125,7 +127,7 @@ async fn failed_rpc_probe_does_not_block_engine_delivery() {
     let worker = Worker::start(target.clone(), config::Mode::Inject).await;
     let block = work(1, 0, 1, config::Mode::Inject);
     worker.tx.send(block.clone()).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 1).await;
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 1).await;
     let mut probe_work = work(2, 1, 2, config::Mode::Inject);
     Arc::get_mut(&mut probe_work).unwrap().deadline = Instant::now() + Duration::from_millis(30);
     assert_eq!(
@@ -133,12 +135,16 @@ async fn failed_rpc_probe_does_not_block_engine_delivery() {
         None
     );
     assert!(
-        worker.stats.lock().execution_targets["a"]
+        worker.stats.lock().unwrap().execution_targets["a"]
             .observation
             .errors
             > 0
     );
-    assert!(worker.stats.lock().execution_targets["a"].health.connected);
+    assert!(
+        worker.stats.lock().unwrap().execution_targets["a"]
+            .health
+            .connected
+    );
     worker.finish().await;
     assert_eq!(rpc.payload_hashes(), [block.payload.hash]);
 }
@@ -146,7 +152,7 @@ async fn failed_rpc_probe_does_not_block_engine_delivery() {
 #[tokio::test(start_paused = true)]
 async fn supervisor_restarts_only_the_failed_worker_after_exit_or_panic() {
     for panic in [false, true] {
-        let stats = Arc::new(parking_lot::Mutex::new(stats::Stats::default()));
+        let stats = Arc::new(Mutex::new(stats::Stats::default()));
         let (stop, stop_rx) = watch::channel(false);
         let (calls, mut receive) = tokio::sync::mpsc::unbounded_channel();
         let mut attempt = 0;
@@ -173,7 +179,12 @@ async fn supervisor_restarts_only_the_failed_worker_after_exit_or_panic() {
         assert_eq!(receive.recv().await, Some(1));
         tokio::time::advance(Duration::from_secs(1)).await;
         assert_eq!(receive.recv().await, Some(2));
-        assert_eq!(stats.lock().execution_targets["failed"].health.restarts, 1);
+        assert_eq!(
+            stats.lock().unwrap().execution_targets["failed"]
+                .health
+                .restarts,
+            1
+        );
         stop.send_replace(true);
         task.await.unwrap();
     }
@@ -221,6 +232,7 @@ async fn bounded_delivery_queue_drops_old_work_and_sends_the_retained_blocks() {
     let gate = Arc::new(tokio::sync::Notify::new());
     rpc.state
         .lock()
+        .unwrap()
         .gates
         .insert(B256::with_last_byte(1), gate.clone());
     let worker = Worker::start(rpc.target(&server.url, "a"), config::Mode::Inject).await;
@@ -233,8 +245,11 @@ async fn bounded_delivery_queue_drops_old_work_and_sends_the_retained_blocks() {
             .unwrap();
     }
     gate.notify_one();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 129).await;
-    assert_eq!(worker.stats.lock().execution_targets["a"].queue_dropped, 72);
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 129).await;
+    assert_eq!(
+        worker.stats.lock().unwrap().execution_targets["a"].queue_dropped,
+        72
+    );
     worker.finish().await;
     let hashes = rpc.payload_hashes();
     assert_eq!(hashes[0], B256::with_last_byte(1));
@@ -252,25 +267,28 @@ async fn recording_recovers_after_storage_repair_without_clearing_error_history(
     let directory = tempfile::tempdir().unwrap();
     let state = directory.path().join("state");
     std::fs::write(&state, "preserve").unwrap();
-    let stats = Arc::new(parking_lot::Mutex::new(stats::Stats::default()));
+    let stats = Arc::new(Mutex::new(stats::Stats::default()));
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    stats.lock().recorder = Some(sender);
+    stats.lock().unwrap().recorder = Some(sender);
     let run = tokio::spawn(recording::Recording::supervise(
         state.clone(),
         receiver,
         stats.clone(),
     ));
-    until(|| stats.lock().recording.errors == 1).await;
-    stats.lock().record(recording::Record::AcquisitionFailed {
-        started_mode_epoch: 0,
-        root: B256::ZERO,
-        slot: 1,
-        consensus: false,
-    });
-    until(|| stats.lock().recording_dropped == 1).await;
+    until(|| stats.lock().unwrap().recording.errors == 1).await;
+    stats
+        .lock()
+        .unwrap()
+        .record(recording::Record::AcquisitionFailed {
+            started_mode_epoch: 0,
+            root: B256::ZERO,
+            slot: 1,
+            consensus: false,
+        });
+    until(|| stats.lock().unwrap().recording_dropped == 1).await;
     std::fs::rename(&state, directory.path().join("history")).unwrap();
     timeout(Duration::from_secs(8), async {
-        while !stats.lock().recording.connected {
+        while !stats.lock().unwrap().recording.connected {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -283,16 +301,19 @@ async fn recording_recovers_after_storage_repair_without_clearing_error_history(
         consensus: false,
     };
     let expected = sonic_rs::to_value(&expected).unwrap();
-    stats.lock().record(recording::Record::AcquisitionFailed {
-        started_mode_epoch: 0,
-        root: B256::with_last_byte(2),
-        slot: 2,
-        consensus: false,
-    });
-    stats.lock().recorder.take();
+    stats
+        .lock()
+        .unwrap()
+        .record(recording::Record::AcquisitionFailed {
+            started_mode_epoch: 0,
+            root: B256::with_last_byte(2),
+            slot: 2,
+            consensus: false,
+        });
+    stats.lock().unwrap().recorder.take();
     run.await.unwrap();
-    assert_eq!(stats.lock().recording.errors, 1);
-    assert_eq!(stats.lock().recording_dropped, 1);
+    assert_eq!(stats.lock().unwrap().recording.errors, 1);
+    assert_eq!(stats.lock().unwrap().recording_dropped, 1);
     let files: Vec<_> = std::fs::read_dir(state.join("observations"))
         .unwrap()
         .collect();

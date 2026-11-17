@@ -8,8 +8,7 @@ use axum::{
     routing::post,
     Router,
 };
-use parking_lot::Mutex;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Mutex};
 
 pub struct Server {
     pub url: String,
@@ -100,6 +99,7 @@ impl MockBeacon {
         let root = fixture_root(&block.data.message);
         self.state
             .lock()
+            .unwrap()
             .blocks
             .insert(root, sonic_rs::to_vec(block).unwrap());
         root
@@ -129,7 +129,7 @@ impl MockBeacon {
             state_root: block_message.state_root,
             body_root: B256::ZERO,
         };
-        self.state.lock().headers.insert(
+        self.state.lock().unwrap().headers.insert(
             root,
             HeaderResponse {
                 execution_optimistic: optimistic,
@@ -168,7 +168,7 @@ async fn handle_beacon(
         .unwrap();
         let root = fixture_root(&block.data.message);
         let (gate, status, import) = {
-            let mut state = beacon.state.lock();
+            let mut state = beacon.state.lock().unwrap();
             state.publications.push((root, fork, contents));
             let missing_parent = state.require_parent
                 && !state.headers.contains_key(&block.data.message.parent_root);
@@ -191,7 +191,7 @@ async fn handle_beacon(
         return StatusCode::from_u16(status).unwrap().into_response();
     }
     let gate = {
-        let mut state = beacon.state.lock();
+        let mut state = beacon.state.lock().unwrap();
         if uri.path().starts_with("/eth/v2/beacon/blocks/") {
             let root = uri.path().rsplit('/').next().unwrap().parse().unwrap();
             state.block_reads.push(root);
@@ -209,7 +209,7 @@ async fn handle_beacon(
     if let Some(gate) = gate {
         gate.notified().await;
     }
-    let mut state = beacon.state.lock();
+    let mut state = beacon.state.lock().unwrap();
     let network = &state.network;
     match uri.path() {
         "/eth/v1/beacon/genesis" => response(
@@ -305,7 +305,7 @@ impl MockRpc {
         }
     }
     pub fn payload_hashes(&self) -> Vec<B256> {
-        self.state.lock().payloads.clone()
+        self.state.lock().unwrap().payloads.clone()
     }
     pub fn target(&self, url: &str, name: &str) -> Arc<target::Target> {
         Arc::new(target::Target {
@@ -336,7 +336,7 @@ pub fn response(value: sonic_rs::Value) -> Response {
 async fn handle_rpc(State(rpc): State<MockRpc>, headers: HeaderMap, bytes: Bytes) -> Response {
     let request: sonic_rs::Value = sonic_rs::from_slice(&bytes).unwrap();
     let method = request["method"].as_str().unwrap();
-    rpc.state.lock().methods.push(method.to_string());
+    rpc.state.lock().unwrap().methods.push(method.to_string());
     if method.starts_with("engine_") {
         let valid = headers
             .get("authorization")
@@ -344,14 +344,14 @@ async fn handle_rpc(State(rpc): State<MockRpc>, headers: HeaderMap, bytes: Bytes
             .and_then(|v| v.strip_prefix("Bearer "))
             .is_some_and(|token| secret().validate(token).is_ok());
         if !valid {
-            rpc.state.lock().bad_jwt += 1;
+            rpc.state.lock().unwrap().bad_jwt += 1;
             return StatusCode::UNAUTHORIZED.into_response();
         }
     }
     let result = match method {
         "engine_getBlobsV1" | "engine_getBlobsV2" => {
             let hashes: Vec<B256> = sonic_rs::from_value(&request["params"][0]).unwrap();
-            let mut s = rpc.state.lock();
+            let mut s = rpc.state.lock().unwrap();
             s.blob_requests.push(hashes.clone());
             if method == "engine_getBlobsV1" {
                 let blobs: Vec<_> = hashes
@@ -367,16 +367,16 @@ async fn handle_rpc(State(rpc): State<MockRpc>, headers: HeaderMap, bytes: Bytes
                 sonic_rs::to_value(&blobs).unwrap()
             }
         }
-        "eth_chainId" => json!(format!("0x{:x}", rpc.state.lock().chain_id)),
+        "eth_chainId" => json!(format!("0x{:x}", rpc.state.lock().unwrap().chain_id)),
         "engine_exchangeCapabilities" => {
-            if rpc.state.lock().supports_v4 {
+            if rpc.state.lock().unwrap().supports_v4 {
                 json!(["engine_newPayloadV4"])
             } else {
                 json!([])
             }
         }
         "eth_getBlockByHash" | "eth_getBlockByNumber" => {
-            let s = rpc.state.lock();
+            let s = rpc.state.lock().unwrap();
             if s.read_error {
                 return response(
                     json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "credential-must-not-leak"}}),
@@ -419,7 +419,7 @@ async fn handle_rpc(State(rpc): State<MockRpc>, headers: HeaderMap, bytes: Bytes
             )
             .unwrap();
             let (gate, status, wrong_hash) = {
-                let mut s = rpc.state.lock();
+                let mut s = rpc.state.lock().unwrap();
                 s.payloads.push(hash);
                 s.inflight += 1;
                 s.max_inflight = s.max_inflight.max(s.inflight);
@@ -435,7 +435,7 @@ async fn handle_rpc(State(rpc): State<MockRpc>, headers: HeaderMap, bytes: Bytes
             // Model execution that continues after an HTTP client disconnects.
             tokio::spawn(async move {
                 if let Some(gate) = gate { gate.notified().await; }
-                let mut s = rpc.state.lock(); s.inflight -= 1;
+                let mut s = rpc.state.lock().unwrap(); s.inflight -= 1;
                 if status == "VALID" { s.known.insert(hash, number); }
                 json!({"status": status, "latestValidHash": if status == "VALID" { Some(if wrong_hash { B256::ZERO } else { hash }) } else { None },
                     "validationError": if status == "INVALID" { Some("invalid test payload") } else { None }})

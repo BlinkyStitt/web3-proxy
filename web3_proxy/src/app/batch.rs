@@ -34,7 +34,11 @@ impl BatchCall {
             }
         };
         {
-            let mut state = self.request.response.lock();
+            let mut state = self
+                .request
+                .response
+                .lock()
+                .expect("response lock poisoned");
             state.user_error_response =
                 !state.error_response && matches!(response.payload, ResponsePayload::Error { .. });
         }

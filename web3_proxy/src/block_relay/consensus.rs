@@ -107,21 +107,25 @@ impl ConsensusTarget {
         if self.confirmed.contains_key(&payload.block.beacon_root) {
             stats
                 .lock()
+                .expect("relay stats lock poisoned")
                 .consensus_targets
                 .entry(self.name.clone())
                 .or_default()
                 .skipped_known += 1;
-            stats.lock().disposition(
-                stats::Layer::Consensus,
-                &payload.block,
-                &self.name,
-                "already_known",
-            );
+            stats
+                .lock()
+                .expect("relay stats lock poisoned")
+                .disposition(
+                    stats::Layer::Consensus,
+                    &payload.block,
+                    &self.name,
+                    "already_known",
+                );
             return;
         }
         let started = Instant::now();
         let (attempt_id, started_mode, started_mode_epoch) = {
-            let mut s = stats.lock();
+            let mut s = stats.lock().expect("relay stats lock poisoned");
             let attempt_id = s.telemetry.attempt();
             s.record(super::recording::Record::SubmissionStarted {
                 attempt_id,
@@ -137,13 +141,14 @@ impl ConsensusTarget {
         };
         stats
             .lock()
+            .expect("relay stats lock poisoned")
             .consensus_targets
             .entry(self.name.clone())
             .or_default()
             .sent += 1;
         let result = self.http.publish(payload).await;
         {
-            let mut s = stats.lock();
+            let mut s = stats.lock().expect("relay stats lock poisoned");
             let t = s.consensus_targets.entry(self.name.clone()).or_default();
             t.publish_latency.record(stats::micros(started.elapsed()));
             match &result {
@@ -173,20 +178,22 @@ impl ConsensusTarget {
                 }
             }
         }
-        stats.lock().record(super::recording::Record::Submission {
-            attempt_id,
-            started_mode,
-            started_mode_epoch,
-            layer: stats::Layer::Consensus,
-            root: payload.block.beacon_root,
-            hash: payload.block.hash,
-            slot: payload.block.slot,
-            target: self.name.clone(),
-            elapsed_us: stats::micros(started.elapsed()),
-            outcome: result
-                .map(|code| format!("http_{code}"))
-                .unwrap_or_else(|_| "unknown".into()),
-        });
+        stats.lock().expect("relay stats lock poisoned").record(
+            super::recording::Record::Submission {
+                attempt_id,
+                started_mode,
+                started_mode_epoch,
+                layer: stats::Layer::Consensus,
+                root: payload.block.beacon_root,
+                hash: payload.block.hash,
+                slot: payload.block.slot,
+                target: self.name.clone(),
+                elapsed_us: stats::micros(started.elapsed()),
+                outcome: result
+                    .map(|code| format!("http_{code}"))
+                    .unwrap_or_else(|_| "unknown".into()),
+            },
+        );
         // Independent observers confirm imports and wake children. Never await a read here.
     }
 
@@ -232,6 +239,7 @@ impl ConsensusTarget {
         context
             .stats
             .lock()
+            .expect("relay stats lock poisoned")
             .consensus_targets
             .entry(self.name.clone())
             .or_default()
@@ -250,7 +258,7 @@ impl ConsensusTarget {
             }
             let result = source::validate_network(&self.http, &context.network).await;
             {
-                let mut s = context.stats.lock();
+                let mut s = context.stats.lock().expect("relay stats lock poisoned");
                 let t = s.consensus_targets.entry(self.name.clone()).or_default();
                 t.health.connected = result.is_ok();
                 t.health.detail = result
@@ -292,6 +300,7 @@ impl ConsensusTarget {
                     context
                         .stats
                         .lock()
+                        .expect("relay stats lock poisoned")
                         .consensus_targets
                         .entry(self.name.clone())
                         .or_default()
@@ -307,6 +316,7 @@ impl ConsensusTarget {
                             context
                                 .stats
                                 .lock()
+                                .expect("relay stats lock poisoned")
                                 .consensus_targets
                                 .entry(self.name.clone())
                                 .or_default()
@@ -318,6 +328,7 @@ impl ConsensusTarget {
                         context
                             .stats
                             .lock()
+                            .expect("relay stats lock poisoned")
                             .consensus_targets
                             .entry(self.name.clone())
                             .or_default()
@@ -342,7 +353,7 @@ impl ConsensusTarget {
                         if let Some(Ok((work, parents))) = result {
                             for payload in parents {
                                 if waiting.len() == 128 {
-                                    context.stats.lock().consensus_targets.entry(self.name.clone()).or_default().queue_dropped += 1;
+                                    context.stats.lock().expect("relay stats lock poisoned").consensus_targets.entry(self.name.clone()).or_default().queue_dropped += 1;
                                     break;
                                 }
                                 waiting.entry(payload.block.beacon_root).or_insert_with(|| Arc::new(ConsensusWork { work: work.clone(), payload }));
@@ -353,7 +364,7 @@ impl ConsensusTarget {
                     item = incoming.recv() => match item {
                         Ok(work) => work,
                         Err(broadcast::error::RecvError::Closed) => return,
-                        Err(broadcast::error::RecvError::Lagged(n)) => { context.stats.lock().consensus_targets.entry(self.name.clone()).or_default().queue_dropped += n; continue; }
+                        Err(broadcast::error::RecvError::Lagged(n)) => { context.stats.lock().expect("relay stats lock poisoned").consensus_targets.entry(self.name.clone()).or_default().queue_dropped += n; continue; }
                     }
                 }
             };
@@ -366,12 +377,16 @@ impl ConsensusTarget {
                     } else {
                         "deadline"
                     };
-                context.stats.lock().disposition(
-                    stats::Layer::Consensus,
-                    &work.payload.block,
-                    &self.name,
-                    reason,
-                );
+                context
+                    .stats
+                    .lock()
+                    .expect("relay stats lock poisoned")
+                    .disposition(
+                        stats::Layer::Consensus,
+                        &work.payload.block,
+                        &self.name,
+                        reason,
+                    );
                 continue;
             }
             let root = work.payload.block.beacon_root;
@@ -379,16 +394,21 @@ impl ConsensusTarget {
                 context
                     .stats
                     .lock()
+                    .expect("relay stats lock poisoned")
                     .consensus_targets
                     .entry(self.name.clone())
                     .or_default()
                     .skipped_known += 1;
-                context.stats.lock().disposition(
-                    stats::Layer::Consensus,
-                    &work.payload.block,
-                    &self.name,
-                    "already_known",
-                );
+                context
+                    .stats
+                    .lock()
+                    .expect("relay stats lock poisoned")
+                    .disposition(
+                        stats::Layer::Consensus,
+                        &work.payload.block,
+                        &self.name,
+                        "already_known",
+                    );
                 continue;
             }
             let previous = attempts.get(&root).await;
@@ -396,12 +416,16 @@ impl ConsensusTarget {
                 .confirmed
                 .contains_key(&work.payload.block.parent_beacon_root);
             if previous.is_some_and(|a| a.count >= 2 || a.parent_confirmed || !parent_confirmed) {
-                context.stats.lock().disposition(
-                    stats::Layer::Consensus,
-                    &work.payload.block,
-                    &self.name,
-                    "duplicate",
-                );
+                context
+                    .stats
+                    .lock()
+                    .expect("relay stats lock poisoned")
+                    .disposition(
+                        stats::Layer::Consensus,
+                        &work.payload.block,
+                        &self.name,
+                        "duplicate",
+                    );
                 continue;
             }
             let count = previous.map_or(1, |a| a.count + 1);
@@ -433,7 +457,11 @@ impl ConsensusTarget {
                     let _ = tokio::time::timeout_at(work.work.deadline, poll).await;
                 });
             } else {
-                context.stats.lock().observation_dropped += 1;
+                context
+                    .stats
+                    .lock()
+                    .expect("relay stats lock poisoned")
+                    .observation_dropped += 1;
             }
             if count == 1 && repairs.len() < 8 {
                 let target = self.clone();
@@ -450,6 +478,7 @@ impl ConsensusTarget {
                         context
                             .stats
                             .lock()
+                            .expect("relay stats lock poisoned")
                             .consensus_targets
                             .entry(target.name.clone())
                             .or_default()
@@ -464,6 +493,7 @@ impl ConsensusTarget {
                 context
                     .stats
                     .lock()
+                    .expect("relay stats lock poisoned")
                     .consensus_targets
                     .entry(self.name.clone())
                     .or_default()
@@ -506,6 +536,7 @@ impl ConsensusTarget {
                     sample.probe_errors += 1;
                     stats
                         .lock()
+                        .expect("relay stats lock poisoned")
                         .consensus_targets
                         .entry(self.name.clone())
                         .or_default()
@@ -522,7 +553,7 @@ impl ConsensusTarget {
             .await;
         }
         let ready = sample.first_ready_us;
-        let mut s = stats.lock();
+        let mut s = stats.lock().expect("relay stats lock poisoned");
         let t = s.consensus_targets.entry(self.name.clone()).or_default();
         if let Some(ready) = ready {
             t.health.progress(work.payload.slot);

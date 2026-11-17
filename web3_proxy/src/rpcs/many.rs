@@ -20,14 +20,13 @@ use futures::stream::StreamExt;
 use futures_util::future::join_all;
 use hashbrown::HashMap;
 use moka::future::CacheBuilder;
-use parking_lot::RwLock;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use sonic_rs::json;
 use std::borrow::Cow;
 use std::fmt::{self, Display};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::pin;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant};
@@ -298,7 +297,12 @@ impl Web3Rpcs {
                 Ok((new_rpc, _handle)) => {
                     // web3 connection worked
 
-                    let old_rpc = self.by_name.read().get(&new_rpc.name).map(Arc::clone);
+                    let old_rpc = self
+                        .by_name
+                        .read()
+                        .expect("RPC registry lock poisoned")
+                        .get(&new_rpc.name)
+                        .map(Arc::clone);
 
                     // clean up the old rpc if it exists
                     if let Some(old_rpc) = old_rpc {
@@ -326,7 +330,10 @@ impl Web3Rpcs {
 
                         // new rpc is synced (or old one was not synced). update the local map
                         // make sure that any new requests use the new connection
-                        self.by_name.write().insert(new_rpc.name.clone(), new_rpc);
+                        self.by_name
+                            .write()
+                            .expect("RPC registry lock poisoned")
+                            .insert(new_rpc.name.clone(), new_rpc);
 
                         // tell the old rpc to disconnect
                         if let Some(ref disconnect_sender) = old_rpc.disconnect_watch {
@@ -334,7 +341,10 @@ impl Web3Rpcs {
                             disconnect_sender.send_replace(true);
                         }
                     } else {
-                        self.by_name.write().insert(new_rpc.name.clone(), new_rpc);
+                        self.by_name
+                            .write()
+                            .expect("RPC registry lock poisoned")
+                            .insert(new_rpc.name.clone(), new_rpc);
                     }
                 }
                 Err(err) => {
@@ -347,12 +357,23 @@ impl Web3Rpcs {
         }
 
         // TODO: remove any RPCs that were part of the config, but are now removed
-        let active_names: Vec<_> = self.by_name.read().keys().cloned().collect();
+        let active_names: Vec<_> = self
+            .by_name
+            .read()
+            .expect("RPC registry lock poisoned")
+            .keys()
+            .cloned()
+            .collect();
         for name in active_names {
             if names_to_keep.contains(&name) {
                 continue;
             }
-            if let Some(old_rpc) = self.by_name.write().remove(&name) {
+            if let Some(old_rpc) = self
+                .by_name
+                .write()
+                .expect("RPC registry lock poisoned")
+                .remove(&name)
+            {
                 if let Some(ref disconnect_sender) = old_rpc.disconnect_watch {
                     debug!("telling {} to disconnect. no longer needed", old_rpc);
                     disconnect_sender.send_replace(true);
@@ -373,15 +394,25 @@ impl Web3Rpcs {
     }
 
     pub fn get(&self, conn_name: &str) -> Option<Arc<Web3Rpc>> {
-        self.by_name.read().get(conn_name).cloned()
+        self.by_name
+            .read()
+            .expect("RPC registry lock poisoned")
+            .get(conn_name)
+            .cloned()
     }
 
     pub fn len(&self) -> usize {
-        self.by_name.read().len()
+        self.by_name
+            .read()
+            .expect("RPC registry lock poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.by_name.read().is_empty()
+        self.by_name
+            .read()
+            .expect("RPC registry lock poisoned")
+            .is_empty()
     }
 
     /// TODO: rename to be consistent between "head" and "synced"
@@ -415,7 +446,12 @@ impl Web3Rpcs {
             // Protected and bundler pools have no consensus task. Their live
             // membership is authoritative, including replacements by name.
             Arc::new(RankedRpcs::from_rpcs(
-                self.by_name.read().values().cloned().collect(),
+                self.by_name
+                    .read()
+                    .expect("RPC registry lock poisoned")
+                    .values()
+                    .cloned()
+                    .collect(),
                 web3_request.head_block.clone(),
                 false,
             ))
@@ -650,7 +686,7 @@ impl fmt::Debug for Web3Rpcs {
         // TODO: the default formatter takes forever to write. this is too quiet though
         let consensus_rpcs = self.watch_ranked_rpcs.borrow().is_some();
 
-        let names = self.by_name.read();
+        let names = self.by_name.read().expect("RPC registry lock poisoned");
 
         let names = names.values().map(|x| x.name.as_str()).collect::<Vec<_>>();
 
@@ -672,7 +708,7 @@ impl Serialize for Web3Rpcs {
         let mut state = serializer.serialize_struct("Web3Rpcs", 7)?;
 
         {
-            let by_name = self.by_name.read();
+            let by_name = self.by_name.read().expect("RPC registry lock poisoned");
             let rpcs: Vec<&Arc<Web3Rpc>> = by_name.values().collect();
             // TODO: coordinate with frontend team to rename "conns" to "rpcs"
             state.serialize_field("conns", &rpcs)?;

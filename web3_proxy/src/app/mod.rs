@@ -449,6 +449,7 @@ impl App {
                 .balanced_rpcs
                 .by_name
                 .read()
+                .expect("RPC registry lock poisoned")
                 .values()
                 .any(|rpc| rpc.supports_batch());
         let started_at = Instant::now();
@@ -811,7 +812,10 @@ impl App {
             Ok(response_data) => {
                 let user_error_response = response_data.is_jsonrpc_err();
 
-                let mut response_lock = web3_request.response.lock();
+                let mut response_lock = web3_request
+                    .response
+                    .lock()
+                    .expect("response lock poisoned");
 
                 // TODO: i really don't like this logic here. it should be inside add_response
                 response_lock.error_response = false;
@@ -826,7 +830,10 @@ impl App {
             Err(err) => {
                 // max tries exceeded. return the error
 
-                let mut response_lock = web3_request.response.lock();
+                let mut response_lock = web3_request
+                    .response
+                    .lock()
+                    .expect("response lock poisoned");
 
                 // TODO: i really don't like this logic here. it should be inside add_error_response
                 // TODO: provider errors should have already been handled, but our error types are too broad
@@ -1049,7 +1056,7 @@ impl App {
 
                 if try_archive {
                     {
-                        let mut response_lock = web3_request.response.lock();
+                        let mut response_lock = web3_request.response.lock().expect("response lock poisoned");
 
                         // TODO: this is a hack. we don't usually want an archive
                         // we probably just hit a bug where a server said it had a block but it dosn't yet have all the transactions

@@ -251,13 +251,19 @@ impl BeaconSource {
                 }
                 Err(error) => {
                     self.verified.store(false, Ordering::Release);
-                    stats.lock().source_error(&self.name, &error.to_string());
+                    stats
+                        .lock()
+                        .expect("relay stats lock poisoned")
+                        .source_error(&self.name, &error.to_string());
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 }
             }
             if let Err(error) = self.stream(&network, &tx, &stats).await {
-                stats.lock().source_error(&self.name, &error.to_string());
+                stats
+                    .lock()
+                    .expect("relay stats lock poisoned")
+                    .source_error(&self.name, &error.to_string());
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -303,7 +309,10 @@ impl BeaconSource {
                 .is_some_and(|v| v.starts_with("text/event-stream")),
             "expected SSE content type"
         );
-        stats.lock().source_connected(&self.name, topic);
+        stats
+            .lock()
+            .expect("relay stats lock poisoned")
+            .source_connected(&self.name, topic);
         // Bound parser memory even for a source that never terminates an SSE frame.
         // The cap applies to one connection; normal reconnect reconciles any gap.
         let stream = response
@@ -342,7 +351,7 @@ impl BeaconSource {
                 result = &mut reconcile, if !reconciled => {
                     reconciled = true;
                     if result.is_err() {
-                        let mut s = stats.lock();
+                        let mut s = stats.lock().expect("relay stats lock poisoned");
                         let source = s.sources.entry(self.name.clone()).or_default();
                         source.errors += 1;
                         source.detail = "event stream connected; reconciliation failed".into();
@@ -357,7 +366,7 @@ impl BeaconSource {
                     struct BlockEvent { block: B256, slot: String }
                     let event: BlockEvent = sonic_rs::from_str(&event.data).map_err(|_| anyhow::anyhow!("invalid block event"))?;
                     let slot = event.slot.parse().map_err(|_| anyhow::anyhow!("invalid event slot"))?;
-                    if network.slot().abs_diff(slot) <= 3 { stats.lock().source_event(&self.name, slot); }
+                    if network.slot().abs_diff(slot) <= 3 { stats.lock().expect("relay stats lock poisoned").source_event(&self.name, slot); }
                     tx.send(Announcement { root: event.block, slot, source: self.name.clone(), kind, at: Instant::now(), at_unix_us: super::stats::unix_micros() }).await?;
                 }
             }

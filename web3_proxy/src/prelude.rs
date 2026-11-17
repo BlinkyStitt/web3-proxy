@@ -8,7 +8,6 @@ pub use http;
 pub use jiff;
 pub use moka;
 pub use ordered_float;
-pub use parking_lot;
 pub use reqwest;
 pub use sentry;
 pub use sentry_tracing;

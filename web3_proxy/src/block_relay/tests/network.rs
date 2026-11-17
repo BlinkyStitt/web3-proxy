@@ -24,11 +24,17 @@ async fn structured_spec_values_do_not_block_network_validation() {
         "Beacon genesis mismatch"
     );
 
-    beacon.state.lock().network.forks.push(config::Fork {
-        name: "future".into(),
-        version: "0x07000000".parse().unwrap(),
-        epoch: 100,
-    });
+    beacon
+        .state
+        .lock()
+        .unwrap()
+        .network
+        .forks
+        .push(config::Fork {
+            name: "future".into(),
+            version: "0x07000000".parse().unwrap(),
+            epoch: 100,
+        });
     assert_eq!(
         source::validate_network(&http, &network)
             .await
@@ -54,7 +60,7 @@ async fn required_spec_fields_still_reject_wrong_types_or_missing_values() {
         json!({"PRESET_BASE": "mainnet", "SECONDS_PER_SLOT": null}),
         json!({"PRESET_BASE": "mainnet", "SECONDS_PER_SLOT": ["12"]}),
     ] {
-        beacon.state.lock().spec = spec.clone();
+        beacon.state.lock().unwrap().spec = spec.clone();
         assert_eq!(
             source::validate_network(&http, &network)
                 .await
@@ -72,7 +78,7 @@ async fn required_spec_values_still_enforce_mainnet_preset_and_slot_duration() {
     let beacon = MockBeacon::new(network.clone());
     let server = Server::beacon(beacon.clone()).await;
     let http = transport::BeaconHttp::new(&server.url, &BTreeMap::new()).unwrap();
-    let valid_spec = beacon.state.lock().spec.clone();
+    let valid_spec = beacon.state.lock().unwrap().spec.clone();
 
     for (field, value, expected) in [
         ("PRESET_BASE", "minimal", "unsupported Beacon preset"),
@@ -89,7 +95,7 @@ async fn required_spec_values_still_enforce_mainnet_preset_and_slot_duration() {
     ] {
         let mut spec = valid_spec.clone();
         spec[field] = json!(value);
-        beacon.state.lock().spec = spec;
+        beacon.state.lock().unwrap().spec = spec;
         assert_eq!(
             source::validate_network(&http, &network)
                 .await

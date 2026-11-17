@@ -60,7 +60,6 @@ moka = { version = "0.12.16", default-features = false, features = ["atomic64", 
 nanorand = { version = "0.8.0", default-features = false, features = ["tls"] }
 once_cell = { version = "1.21.4" }
 ordered-float = {version = "5.5.1" }
-parking_lot = "0.12.5"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
 sentry = { version = "0.49.5", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tracing"] }
 sentry-tracing = "0.49.5"

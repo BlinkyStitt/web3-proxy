@@ -107,7 +107,7 @@ impl Target {
                 stream_id += 1;
                 let mut headers = subscription.into_stream();
                 {
-                    let mut s = stats.lock();
+                    let mut s = stats.lock().expect("relay stats lock poisoned");
                     s.telemetry
                         .head_streams
                         .entry(self.name.clone())
@@ -122,7 +122,7 @@ impl Target {
                     let Some(header) = header else {
                         break;
                     };
-                    let mut s = stats.lock();
+                    let mut s = stats.lock().expect("relay stats lock poisoned");
                     let head = super::telemetry::Head {
                         hash: header.hash,
                         number: header.number,
@@ -146,6 +146,7 @@ impl Target {
             }
             stats
                 .lock()
+                .expect("relay stats lock poisoned")
                 .telemetry
                 .head_streams
                 .entry(self.name.clone())
@@ -206,14 +207,14 @@ impl Target {
             }
             match self.validate(chain_id).await {
                 Ok(()) => {
-                    let mut s = stats.lock();
+                    let mut s = stats.lock().expect("relay stats lock poisoned");
                     let t = s.execution_targets.entry(self.name.clone()).or_default();
                     t.health.connected = true;
                     t.health.detail = "Engine V4 ready".into();
                     break;
                 }
                 Err(error) => {
-                    let mut s = stats.lock();
+                    let mut s = stats.lock().expect("relay stats lock poisoned");
                     let t = s.execution_targets.entry(self.name.clone()).or_default();
                     t.health.connected = false;
                     t.health.errors += 1;
@@ -268,6 +269,7 @@ impl Target {
                     Err(broadcast::error::TryRecvError::Lagged(n)) => {
                         stats
                             .lock()
+                            .expect("relay stats lock poisoned")
                             .execution_targets
                             .entry(self.name.clone())
                             .or_default()
@@ -280,6 +282,7 @@ impl Target {
                     pending.pop_front();
                     stats
                         .lock()
+                        .expect("relay stats lock poisoned")
                         .execution_targets
                         .entry(self.name.clone())
                         .or_default()
@@ -302,27 +305,33 @@ impl Target {
                         Ok(work) => { pending.push_back(work); continue; },
                         Err(broadcast::error::RecvError::Closed) => return,
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            stats.lock().execution_targets.entry(self.name.clone()).or_default().queue_dropped += n; continue;
+                            stats.lock().expect("relay stats lock poisoned").execution_targets.entry(self.name.clone()).or_default().queue_dropped += n; continue;
                         }
                     }
                 }
             };
             if work.mode == Mode::Observe || *mode.borrow() == Mode::Observe {
-                stats.lock().disposition(
-                    stats::Layer::Execution,
-                    &work.payload,
-                    &self.name,
-                    "observe",
-                );
+                stats
+                    .lock()
+                    .expect("relay stats lock poisoned")
+                    .disposition(
+                        stats::Layer::Execution,
+                        &work.payload,
+                        &self.name,
+                        "observe",
+                    );
                 continue;
             }
             if Instant::now() >= work.deadline {
-                stats.lock().disposition(
-                    stats::Layer::Execution,
-                    &work.payload,
-                    &self.name,
-                    "deadline",
-                );
+                stats
+                    .lock()
+                    .expect("relay stats lock poisoned")
+                    .disposition(
+                        stats::Layer::Execution,
+                        &work.payload,
+                        &self.name,
+                        "deadline",
+                    );
                 continue;
             }
             let p = &work.payload;
@@ -334,12 +343,14 @@ impl Target {
                 self.wake_children(p.hash, &mut waiting, &mut pending, &stats);
                 stats
                     .lock()
+                    .expect("relay stats lock poisoned")
                     .execution_targets
                     .entry(self.name.clone())
                     .or_default()
                     .skipped_known += 1;
                 stats
                     .lock()
+                    .expect("relay stats lock poisoned")
                     .disposition(stats::Layer::Execution, p, &self.name, "already_known");
                 continue;
             }
@@ -355,12 +366,14 @@ impl Target {
             if previous.is_some() && !parent_became_valid {
                 stats
                     .lock()
+                    .expect("relay stats lock poisoned")
                     .execution_targets
                     .entry(self.name.clone())
                     .or_default()
                     .suppressed_duplicate += 1;
                 stats
                     .lock()
+                    .expect("relay stats lock poisoned")
                     .disposition(stats::Layer::Execution, p, &self.name, "duplicate");
                 continue;
             }
@@ -372,16 +385,15 @@ impl Target {
                 handled.insert(p.hash, Delivery::invalid_ancestor()).await;
                 stats
                     .lock()
+                    .expect("relay stats lock poisoned")
                     .execution_targets
                     .entry(self.name.clone())
                     .or_default()
                     .skipped_invalid_ancestor += 1;
-                stats.lock().disposition(
-                    stats::Layer::Execution,
-                    p,
-                    &self.name,
-                    "invalid_ancestor",
-                );
+                stats
+                    .lock()
+                    .expect("relay stats lock poisoned")
+                    .disposition(stats::Layer::Execution, p, &self.name, "invalid_ancestor");
                 continue;
             }
             let parent_was_valid = self.confirmed.contains_key(&p.parent_hash)
@@ -414,6 +426,7 @@ impl Target {
                     } else {
                         stats
                             .lock()
+                            .expect("relay stats lock poisoned")
                             .execution_targets
                             .entry(self.name.clone())
                             .or_default()
@@ -468,6 +481,7 @@ impl Target {
                 pending.pop_front();
                 stats
                     .lock()
+                    .expect("relay stats lock poisoned")
                     .execution_targets
                     .entry(self.name.clone())
                     .or_default()
@@ -479,13 +493,14 @@ impl Target {
     async fn deliver(&self, payload: &RelayPayload, stats: &Shared) -> Result<PayloadStatus> {
         stats
             .lock()
+            .expect("relay stats lock poisoned")
             .execution_targets
             .entry(self.name.clone())
             .or_default()
             .sent += 1;
         let start = Instant::now();
         let (attempt_id, started_mode, started_mode_epoch) = {
-            let mut s = stats.lock();
+            let mut s = stats.lock().expect("relay stats lock poisoned");
             let attempt_id = s.telemetry.attempt();
             let canonical_before_call = s
                 .telemetry
@@ -512,7 +527,7 @@ impl Target {
             );
             Ok(status)
         });
-        let mut s = stats.lock();
+        let mut s = stats.lock().expect("relay stats lock poisoned");
         let t = s.execution_targets.entry(self.name.clone()).or_default();
         t.engine_latency.record(stats::micros(start.elapsed()));
         match &result {
@@ -617,6 +632,7 @@ impl Target {
         if !anchored {
             stats
                 .lock()
+                .expect("relay stats lock poisoned")
                 .execution_targets
                 .entry(self.name.clone())
                 .or_default()
@@ -630,6 +646,7 @@ impl Target {
         }
         stats
             .lock()
+            .expect("relay stats lock poisoned")
             .execution_targets
             .entry(self.name.clone())
             .or_default()
@@ -698,6 +715,7 @@ impl Target {
                         sample.probe_errors += 1;
                         stats
                             .lock()
+                            .expect("relay stats lock poisoned")
                             .execution_targets
                             .entry(self.name.clone())
                             .or_default()
@@ -735,7 +753,7 @@ impl Target {
             tokio::time::sleep(delay).await;
         }
         let ready = sample.first_ready_us;
-        let mut s = stats.lock();
+        let mut s = stats.lock().expect("relay stats lock poisoned");
         let t = s.execution_targets.entry(self.name.clone()).or_default();
         if let Some(ready) = ready {
             t.health.progress(work.payload.slot);

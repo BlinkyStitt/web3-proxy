@@ -57,7 +57,11 @@ async fn run() {
                 .as_raw_str()
                 .as_bytes()
         );
-        rpc.state.lock().known.insert(payload.hash, payload.number);
+        rpc.state
+            .lock()
+            .unwrap()
+            .known
+            .insert(payload.hash, payload.number);
         println!(
             "fixture {} {} {} {}",
             path.file_name().unwrap().to_string_lossy(),
@@ -97,6 +101,7 @@ async fn run() {
                 source
                     .state
                     .lock()
+                    .unwrap()
                     .blocks
                     .insert(root, fixtures[index % fixtures.len()].clone());
             }
@@ -106,6 +111,7 @@ async fn run() {
             while rpc
                 .state
                 .lock()
+                .unwrap()
                 .methods
                 .iter()
                 .filter(|method| method.as_str() == "eth_getBlockByHash")
@@ -120,7 +126,7 @@ async fn run() {
         for index in start..end {
             let root = B256::from(alloy::primitives::U256::from(index + 1));
             for source in &sources {
-                source.state.lock().blocks.remove(&root);
+                source.state.lock().unwrap().blocks.remove(&root);
             }
         }
     }

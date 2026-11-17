@@ -29,7 +29,6 @@ use hashbrown::HashMap;
 use latency::{EwmaLatency, PeakEwmaLatency, RollingQuantileLatency};
 use nanorand::tls::TlsWyRand;
 use nanorand::Rng;
-use parking_lot::RwLock;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use sonic_rs::{json, OwnedLazyValue};
@@ -39,7 +38,10 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{self, AtomicBool, AtomicU32, AtomicU64, AtomicUsize};
-use std::{cmp::Ordering, sync::Arc};
+use std::{
+    cmp::Ordering,
+    sync::{Arc, RwLock},
+};
 use tokio::select;
 use tokio::sync::{watch, AcquireError, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio::time::{interval, sleep, sleep_until, Duration, Instant, MissedTickBehavior};
@@ -681,7 +683,10 @@ impl Web3Rpc {
         // Publish a complete check. A transport failure must not publish a
         // partially checked set or turn an existing capability into a failure.
         info!(rpc = %self, ?support, "detected trace method support");
-        *self.trace_method_support.write() = support;
+        *self
+            .trace_method_support
+            .write()
+            .expect("RPC trace capability lock poisoned") = support;
         Ok(())
     }
 
@@ -720,6 +725,7 @@ impl Web3Rpc {
             && self
                 .trace_method_support
                 .read()
+                .expect("RPC trace capability lock poisoned")
                 .get(request.inner.method())
                 .copied()
                 .unwrap_or(true)
@@ -782,12 +788,18 @@ impl Web3Rpc {
             Ok(client_version) => {
                 // this is a sync lock, but we only keep it open for a short time
                 // TODO: something more friendly to async that also works with serde's Serialize
-                let mut lock = self.client_version.write();
+                let mut lock = self
+                    .client_version
+                    .write()
+                    .expect("RPC client version lock poisoned");
 
                 *lock = Some(client_version);
             }
             Err(err) => {
-                let mut lock = self.client_version.write();
+                let mut lock = self
+                    .client_version
+                    .write()
+                    .expect("RPC client version lock poisoned");
 
                 *lock = Some(format!("error: {}", err));
 
@@ -1822,7 +1834,14 @@ impl Serialize for Web3Rpc {
 
         state.serialize_field("backup", &self.backup)?;
 
-        state.serialize_field("web3_clientVersion", &self.client_version.read().as_ref())?;
+        state.serialize_field(
+            "web3_clientVersion",
+            &self
+                .client_version
+                .read()
+                .expect("RPC client version lock poisoned")
+                .as_ref(),
+        )?;
 
         match self.block_data_limit.load(atomic::Ordering::SeqCst) {
             u64::MAX => {
@@ -1847,7 +1866,13 @@ impl Serialize for Web3Rpc {
             &self.supports_simulate.load(atomic::Ordering::SeqCst),
         )?;
 
-        state.serialize_field("trace_method_support", &*self.trace_method_support.read())?;
+        state.serialize_field(
+            "trace_method_support",
+            &*self
+                .trace_method_support
+                .read()
+                .expect("RPC trace capability lock poisoned"),
+        )?;
 
         state.serialize_field(
             "latency_queues",
@@ -1885,7 +1910,13 @@ impl Serialize for Web3Rpc {
         )?;
 
         {
-            let head_delay_ms = self.head_delay.read().latency().as_secs_f32() * 1000.0;
+            let head_delay_ms = self
+                .head_delay
+                .read()
+                .expect("RPC head delay lock poisoned")
+                .latency()
+                .as_secs_f32()
+                * 1000.0;
             state.serialize_field("head_delay_ms", &(head_delay_ms))?;
         }
 
@@ -1945,7 +1976,13 @@ impl fmt::Debug for Web3Rpc {
             &self.supports_simulate.load(atomic::Ordering::SeqCst),
         );
 
-        f.field("trace_method_support", &*self.trace_method_support.read());
+        f.field(
+            "trace_method_support",
+            &*self
+                .trace_method_support
+                .read()
+                .expect("RPC trace capability lock poisoned"),
+        );
 
         f.field("tier", &self.tier.load(atomic::Ordering::SeqCst));
 
@@ -2234,6 +2271,7 @@ mod tests {
         .unwrap();
         rpcs.by_name
             .write()
+            .unwrap()
             .insert(stub.rpc.name.clone(), stub.rpc.clone());
 
         assert_eq!(rpcs.blocks_by_hash.get(&block_hash).await, None);
@@ -2504,7 +2542,10 @@ mod tests {
                 }
                 check.await.unwrap().unwrap();
                 for (index, method) in TRACE_METHODS.into_iter().enumerate() {
-                    assert_eq!(node.rpc.trace_method_support.read()[method], index % 2 == 0);
+                    assert_eq!(
+                        node.rpc.trace_method_support.read().unwrap()[method],
+                        index % 2 == 0
+                    );
                 }
                 assert_eq!(
                     node.rpc.supports_simulate.load(atomic::Ordering::SeqCst),
@@ -3082,7 +3123,7 @@ mod trace_probe_tests {
                 check.await.unwrap().unwrap();
                 for (index, method) in TRACE_METHODS.into_iter().enumerate() {
                     assert_eq!(
-                        node.rpc.trace_method_support.read()[method],
+                        node.rpc.trace_method_support.read().unwrap()[method],
                         index % 2 == generation
                     );
                 }
@@ -3101,7 +3142,7 @@ mod trace_probe_tests {
                     .into_iter()
                     .map(|method| (method, true))
                     .collect();
-                *node.rpc.trace_method_support.write() = original.clone();
+                *node.rpc.trace_method_support.write().unwrap() = original.clone();
                 let rpc = node.rpc.clone();
                 let check =
                     super::super::test_support::spawn(
@@ -3128,7 +3169,7 @@ mod trace_probe_tests {
                         "error":{"code":-32603,"message":"temporary failure"}}));
                 }
                 assert!(check.await.unwrap().is_err());
-                assert_eq!(*node.rpc.trace_method_support.read(), original);
+                assert_eq!(*node.rpc.trace_method_support.read().unwrap(), original);
                 node.quiet().await;
                 node.idle();
             })

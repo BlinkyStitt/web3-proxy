@@ -37,6 +37,7 @@ async fn unrecognized_method_error_retries_another_backend() {
             let mut geth = Harness::configured("geth", 1, 64, |rpc| {
                 rpc.trace_method_support
                     .write()
+                    .unwrap()
                     .insert("trace_transaction", true);
             })
             .await;
@@ -66,16 +67,24 @@ async fn startup_capabilities_route_each_method_without_trying_unsupported_nodes
                 let mut geth = Harness::configured("geth", 2, 64, |rpc| {
                     rpc.trace_method_support
                         .write()
+                        .unwrap()
                         .insert("trace_transaction", false);
-                    rpc.trace_method_support.write().insert("trace_get", true);
+                    rpc.trace_method_support
+                        .write()
+                        .unwrap()
+                        .insert("trace_get", true);
                 })
                 .await;
                 let mut reth = Harness::configured("reth", 2, 64, |rpc| {
                     rpc.backup = backup;
                     rpc.trace_method_support
                         .write()
+                        .unwrap()
                         .insert("trace_transaction", true);
-                    rpc.trace_method_support.write().insert("trace_get", false);
+                    rpc.trace_method_support
+                        .write()
+                        .unwrap()
+                        .insert("trace_get", false);
                 })
                 .await;
                 reth.rpc.tier.store(10, Ordering::SeqCst);
@@ -123,6 +132,7 @@ async fn mixed_batch_uses_per_method_capabilities_and_preserves_order() {
         let mut geth = Harness::configured("geth", 2, 64, |rpc| {
             rpc.trace_method_support
                 .write()
+                .unwrap()
                 .insert("trace_transaction", false);
         })
         .await;
@@ -160,12 +170,14 @@ async fn all_backends_without_a_method_return_method_not_found_promptly() {
             let mut geth = Harness::configured("geth", 1, 64, |rpc| {
                 rpc.trace_method_support
                     .write()
+                    .unwrap()
                     .insert("trace_transaction", false);
             })
             .await;
             let mut reth = Harness::configured("reth", 1, 64, |rpc| {
                 rpc.trace_method_support
                     .write()
+                    .unwrap()
                     .insert("trace_transaction", false);
             })
             .await;
@@ -206,6 +218,7 @@ async fn capability_changes_are_rechecked_before_sending_a_reserved_call() {
         node.rpc
             .trace_method_support
             .write()
+            .unwrap()
             .insert("trace_transaction", false);
         assert!(matches!(
             handle.request::<sonic_rs::OwnedLazyValue>().await,

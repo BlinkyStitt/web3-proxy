@@ -10,7 +10,6 @@ use alloy::rpc::types::{Block, Header};
 use futures::{future::BoxFuture, FutureExt};
 use hashbrown::{HashMap, HashSet};
 use moka::future::{Cache, CacheBuilder};
-use parking_lot::Mutex as SyncMutex;
 use serde::ser::{SerializeMap, SerializeStruct};
 use serde::{Deserialize, Serialize};
 use sonic_rs::{json, JsonContainerTrait, JsonValueTrait, OwnedLazyValue};
@@ -19,7 +18,7 @@ use std::hash::Hash;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
     fmt::Display,
-    sync::{Arc, Weak},
+    sync::{Arc, Mutex as SyncMutex, Weak},
 };
 use tokio::select;
 use tokio::sync::{mpsc, Mutex};
@@ -67,7 +66,11 @@ impl HeadObservationPublisher {
         block: Option<BlockHeader>,
         rpc: Arc<Web3Rpc>,
     ) -> Result<(), mpsc::error::SendError<HeadObservation>> {
-        let _publish_guard = self.inner.publish_lock.lock();
+        let _publish_guard = self
+            .inner
+            .publish_lock
+            .lock()
+            .expect("head publication lock poisoned");
         self.inner.sender.send(HeadObservation {
             block,
             rpc,
@@ -223,6 +226,7 @@ impl BlockHydrationCoordinator {
         let backups: Vec<_> = pool
             .by_name
             .read()
+            .expect("RPC registry lock poisoned")
             .values()
             .filter(|rpc| {
                 rpc.backup
@@ -852,8 +856,8 @@ mod tests {
     use crate::block_number::RequestBlocks;
     use crate::rpcs::many::Web3Rpcs;
     use hashbrown::HashMap;
-    use parking_lot::RwLock;
     use sonic_rs::JsonValueTrait;
+    use std::sync::RwLock;
     use tokio::sync::{mpsc, watch, Barrier};
     use tokio::time::Duration;
 

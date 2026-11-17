@@ -122,9 +122,9 @@ async fn relays_engine_blob_and_proof_bytes_and_leaves_rejection_to_consensus_no
         } else {
             json!({"blob": blobs[0], "proof": proofs[0]})
         };
-        engine.state.lock().blobs.insert(hashes[0], data);
+        engine.state.lock().unwrap().blobs.insert(hashes[0], data);
         let target = MockBeacon::new(network.clone());
-        target.state.lock().publication_status = 400;
+        target.state.lock().unwrap().publication_status = 400;
         let target_server = Server::beacon(target.clone()).await;
         let mut config = relay_config(
             network,
@@ -141,16 +141,22 @@ async fn relays_engine_blob_and_proof_bytes_and_leaves_rejection_to_consensus_no
         until(|| relay.snapshot()["consensus_targets"]["cl"]["rejected"].as_u64() == Some(1)).await;
         stop.send(()).unwrap();
         run.await.unwrap();
-        assert_eq!(engine.state.lock().blob_requests, vec![hashes]);
-        assert_eq!(engine.state.lock().bad_jwt, 0);
+        assert_eq!(engine.state.lock().unwrap().blob_requests, vec![hashes]);
+        assert_eq!(engine.state.lock().unwrap().bad_jwt, 0);
         let method = if fork == "fulu" {
             "engine_getBlobsV2"
         } else {
             "engine_getBlobsV1"
         };
-        assert!(engine.state.lock().methods.iter().any(|m| m == method));
-        assert!(source.state.lock().blob_reads.is_empty());
-        let state = target.state.lock();
+        assert!(engine
+            .state
+            .lock()
+            .unwrap()
+            .methods
+            .iter()
+            .any(|m| m == method));
+        assert!(source.state.lock().unwrap().blob_reads.is_empty());
+        let state = target.state.lock().unwrap();
         assert_eq!(state.publications[0].0, root);
         assert_eq!(
             state.publications[0].2["signed_block"],
@@ -198,18 +204,18 @@ async fn late_engine_blobs_retry_without_delaying_execution() {
         let (relay, stop, run) = start_relay(&config).await;
         until(|| source.events.receiver_count() == 1).await;
         source.announce("block_gossip", root, block.data.message.slot);
-        until(|| engine.state.lock().blob_requests.len() >= 2).await;
+        until(|| engine.state.lock().unwrap().blob_requests.len() >= 2).await;
         assert_eq!(engine.payload_hashes(), vec![payload.hash]);
-        assert!(target.state.lock().publications.is_empty());
+        assert!(target.state.lock().unwrap().publications.is_empty());
         let data = if fork == "fulu" {
             json!({"blob": blobs[0], "proofs": [Bytes48::repeat_byte(7)]})
         } else {
             json!({"blob": blobs[0], "proof": Bytes48::repeat_byte(7)})
         };
-        engine.state.lock().blobs.insert(hashes[0], data);
+        engine.state.lock().unwrap().blobs.insert(hashes[0], data);
         timeout(
             Duration::from_millis(250),
-            until(|| target.state.lock().publications.len() == 1),
+            until(|| target.state.lock().unwrap().publications.len() == 1),
         )
         .await
         .unwrap();
@@ -220,7 +226,7 @@ async fn late_engine_blobs_retry_without_delaying_execution() {
             Some(0)
         );
         assert_eq!(engine.payload_hashes(), vec![payload.hash]);
-        assert!(source.state.lock().blob_reads.is_empty());
+        assert!(source.state.lock().unwrap().blob_reads.is_empty());
     }
 }
 
@@ -262,8 +268,8 @@ async fn missing_engine_blobs_do_not_fetch_proofless_beacon_blobs_or_block_execu
     .await;
     stop.send(()).unwrap();
     run.await.unwrap();
-    assert!(source.state.lock().blob_reads.is_empty());
-    assert!(target.state.lock().publications.is_empty());
+    assert!(source.state.lock().unwrap().blob_reads.is_empty());
+    assert!(target.state.lock().unwrap().publications.is_empty());
 }
 
 #[tokio::test]
@@ -284,7 +290,12 @@ async fn two_forwarders_send_to_all_three_execution_and_consensus_targets() {
         let engine = MockRpc::new();
         let server = Server::rpc(engine.clone()).await;
         let gate = Arc::new(tokio::sync::Notify::new());
-        engine.state.lock().gates.insert(hash, gate.clone());
+        engine
+            .state
+            .lock()
+            .unwrap()
+            .gates
+            .insert(hash, gate.clone());
         gates.push(gate);
         config.execution_targets.insert(
             format!("el-{index}"),
@@ -301,6 +312,7 @@ async fn two_forwarders_send_to_all_three_execution_and_consensus_targets() {
         beacon
             .state
             .lock()
+            .unwrap()
             .publication_gates
             .insert(root, gate.clone());
         gates.push(gate);
@@ -320,7 +332,7 @@ async fn two_forwarders_send_to_all_three_execution_and_consensus_targets() {
         engines.iter().all(|e| e.payload_hashes().len() == 2)
             && beacons
                 .iter()
-                .all(|b| b.state.lock().publications.len() == 2)
+                .all(|b| b.state.lock().unwrap().publications.len() == 2)
     })
     .await;
     for gate in gates {
@@ -337,16 +349,17 @@ async fn two_forwarders_send_to_all_three_execution_and_consensus_targets() {
     run_b.await.unwrap();
     for engine in engines {
         assert_eq!(engine.payload_hashes(), vec![hash, hash]);
-        assert_eq!(engine.state.lock().max_inflight, 2);
+        assert_eq!(engine.state.lock().unwrap().max_inflight, 2);
         assert!(!engine
             .state
             .lock()
+            .unwrap()
             .methods
             .iter()
             .any(|m| m.starts_with("engine_forkchoice")));
     }
     for beacon in beacons {
-        let s = beacon.state.lock();
+        let s = beacon.state.lock().unwrap();
         assert_eq!(s.publications.len(), 2);
         for (published_root, fork, contents) in &s.publications {
             assert_eq!(*published_root, root);
@@ -400,8 +413,8 @@ async fn unavailable_blobs_do_not_delay_execution_and_observe_mode_never_publish
             && relay.snapshot()["consensus_acquisition_failed"].as_u64() == Some(1)
     })
     .await;
-    assert!(source.state.lock().blob_reads.is_empty());
-    assert_eq!(target.state.lock().publications.len(), 0);
+    assert!(source.state.lock().unwrap().blob_reads.is_empty());
+    assert_eq!(target.state.lock().unwrap().publications.len(), 0);
     config.mode = config::Mode::Observe;
     relay.apply(Some(&config)).await.unwrap();
     let mut next = block.clone();
@@ -409,7 +422,7 @@ async fn unavailable_blobs_do_not_delay_execution_and_observe_mode_never_publish
     rehash_execution(&mut next);
     let next_root = source.add(&next);
     let hashes = decode(&next, &config.network).versioned_hashes();
-    engine.state.lock().blobs.insert(
+    engine.state.lock().unwrap().blobs.insert(
         hashes[0],
         json!({"blob": blobs[0], "proof": Bytes48::repeat_byte(7)}),
     );
@@ -418,7 +431,7 @@ async fn unavailable_blobs_do_not_delay_execution_and_observe_mode_never_publish
     stop.send(()).unwrap();
     run.await.unwrap();
     assert_eq!(engine.payload_hashes(), vec![hash]);
-    assert_eq!(target.state.lock().publications.len(), 0);
+    assert_eq!(target.state.lock().unwrap().publications.len(), 0);
 }
 
 #[tokio::test]
@@ -440,12 +453,21 @@ async fn optimistic_headers_are_not_completed_imports_or_missing_blocks() {
     let w_mut = Arc::get_mut(&mut w).unwrap();
     w_mut.payload = Arc::new(decode(&response, &network));
     w_mut.deadline = Instant::now() + Duration::from_millis(60);
-    let stats = Arc::new(parking_lot::Mutex::new(stats::Stats::default()));
+    let stats = Arc::new(Mutex::new(stats::Stats::default()));
     let observed = target.observe(w, stats.clone()).await;
     assert_eq!(observed, stats::Observation::default());
-    assert_eq!(stats.lock().consensus_targets["cl"].optimistic, 1);
-    assert_eq!(stats.lock().samples.back().unwrap().last_missing_us, None);
-    assert_eq!(beacon.state.lock().publications.len(), 0);
+    assert_eq!(stats.lock().unwrap().consensus_targets["cl"].optimistic, 1);
+    assert_eq!(
+        stats
+            .lock()
+            .unwrap()
+            .samples
+            .back()
+            .unwrap()
+            .last_missing_us,
+        None
+    );
+    assert_eq!(beacon.state.lock().unwrap().publications.len(), 0);
 }
 
 #[tokio::test]
@@ -453,8 +475,8 @@ async fn publication_202_without_import_does_not_count_as_ready() {
     let network = network();
     let response = beacon(&network);
     let beacon = MockBeacon::new(network.clone());
-    beacon.state.lock().publication_status = 202;
-    beacon.state.lock().import_publications = false;
+    beacon.state.lock().unwrap().publication_status = 202;
+    beacon.state.lock().unwrap().import_publications = false;
     let server = Server::beacon(beacon.clone()).await;
     let target = Arc::new(
         ConsensusTarget::new(
@@ -470,7 +492,7 @@ async fn publication_202_without_import_does_not_count_as_ready() {
     w_mut.deadline = Instant::now() + Duration::from_millis(200);
     let payload =
         Arc::new(ConsensusPayload::from_blobs(w.payload.clone(), Vec::new(), Vec::new()).unwrap());
-    let stats = Arc::new(parking_lot::Mutex::new(stats::Stats::default()));
+    let stats = Arc::new(Mutex::new(stats::Stats::default()));
     let (tx, rx) = broadcast::channel(8);
     let (stop, stop_rx) = watch::channel(false);
     let (_, mode) = watch::channel(config::Mode::Inject);
@@ -493,9 +515,9 @@ async fn publication_202_without_import_does_not_count_as_ready() {
     stop.send_replace(true);
     run.await.unwrap();
     assert_eq!(observed, stats::Observation::default());
-    assert_eq!(stats.lock().consensus_targets["cl"].accepted, 1);
-    assert_eq!(stats.lock().consensus_targets["cl"].ready, 0);
-    assert_eq!(stats.lock().consensus_targets["cl"].published, 0);
+    assert_eq!(stats.lock().unwrap().consensus_targets["cl"].accepted, 1);
+    assert_eq!(stats.lock().unwrap().consensus_targets["cl"].ready, 0);
+    assert_eq!(stats.lock().unwrap().consensus_targets["cl"].published, 0);
 }
 
 fn child_of(
@@ -547,7 +569,7 @@ async fn consensus_repairs_cached_ancestors_oldest_first_and_retries_child() {
     let parent = child_of(&anchor, &network);
     let child = child_of(&parent, &network);
     let beacon = MockBeacon::new(network.clone());
-    beacon.state.lock().require_parent = true;
+    beacon.state.lock().unwrap().require_parent = true;
     beacon.import(&anchor, false, true);
     let server = Server::beacon(beacon.clone()).await;
     let target = Arc::new(
@@ -564,7 +586,7 @@ async fn consensus_repairs_cached_ancestors_oldest_first_and_retries_child() {
     cache
         .insert(parent.payload.block.beacon_root, parent.payload.clone())
         .await;
-    let stats = Arc::new(parking_lot::Mutex::new(stats::Stats::default()));
+    let stats = Arc::new(Mutex::new(stats::Stats::default()));
     let (tx, rx) = broadcast::channel(8);
     let (stop, stop_rx) = watch::channel(false);
     let (_, mode) = watch::channel(config::Mode::Inject);
@@ -582,6 +604,7 @@ async fn consensus_repairs_cached_ancestors_oldest_first_and_retries_child() {
     until(|| {
         stats
             .lock()
+            .unwrap()
             .consensus_targets
             .get("cl")
             .is_some_and(|t| t.published == 2)
@@ -593,6 +616,7 @@ async fn consensus_repairs_cached_ancestors_oldest_first_and_retries_child() {
         beacon
             .state
             .lock()
+            .unwrap()
             .publications
             .iter()
             .map(|(root, _, _)| *root)
@@ -603,8 +627,8 @@ async fn consensus_repairs_cached_ancestors_oldest_first_and_retries_child() {
             child.payload.block.beacon_root
         ]
     );
-    assert_eq!(stats.lock().consensus_targets["cl"].accepted, 1);
-    assert_eq!(stats.lock().consensus_targets["cl"].repairs, 1);
+    assert_eq!(stats.lock().unwrap().consensus_targets["cl"].accepted, 1);
+    assert_eq!(stats.lock().unwrap().consensus_targets["cl"].repairs, 1);
 }
 
 #[tokio::test]
@@ -613,7 +637,7 @@ async fn consensus_parent_readiness_wakes_waiting_child_without_republishing_par
     let parent = beacon(&network);
     let child = child_of(&parent, &network);
     let beacon = MockBeacon::new(network.clone());
-    beacon.state.lock().require_parent = true;
+    beacon.state.lock().unwrap().require_parent = true;
     let server = Server::beacon(beacon.clone()).await;
     let target = Arc::new(
         ConsensusTarget::new(
@@ -625,7 +649,7 @@ async fn consensus_parent_readiness_wakes_waiting_child_without_republishing_par
     );
     let parent_work = consensus_work(&parent, &network);
     let child_work = consensus_work(&child, &network);
-    let stats = Arc::new(parking_lot::Mutex::new(stats::Stats::default()));
+    let stats = Arc::new(Mutex::new(stats::Stats::default()));
     let (tx, rx) = broadcast::channel(8);
     let (stop, stop_rx) = watch::channel(false);
     let (_, mode) = watch::channel(config::Mode::Inject);
@@ -643,6 +667,7 @@ async fn consensus_parent_readiness_wakes_waiting_child_without_republishing_par
     until(|| {
         stats
             .lock()
+            .unwrap()
             .consensus_targets
             .get("cl")
             .is_some_and(|t| t.repair_gaps == 1)
@@ -654,13 +679,14 @@ async fn consensus_parent_readiness_wakes_waiting_child_without_republishing_par
         .await
         .ready
         .is_some());
-    until(|| stats.lock().consensus_targets["cl"].published == 1).await;
+    until(|| stats.lock().unwrap().consensus_targets["cl"].published == 1).await;
     stop.send_replace(true);
     run.await.unwrap();
     assert_eq!(
         beacon
             .state
             .lock()
+            .unwrap()
             .publications
             .iter()
             .map(|(root, _, _)| *root)
@@ -695,7 +721,7 @@ async fn fresh_observe_mode_fetches_both_layers_without_any_submission() {
     stop.send(()).unwrap();
     run.await.unwrap();
     assert_eq!(engine.payload_hashes(), Vec::<B256>::new());
-    assert_eq!(beacon.state.lock().publications.len(), 0);
+    assert_eq!(beacon.state.lock().unwrap().publications.len(), 0);
     assert_eq!(
         relay.snapshot()["execution_targets"]["el"]["sent"].as_u64(),
         Some(0)
@@ -712,7 +738,7 @@ async fn stalled_consensus_import_observations_do_not_delay_new_publications() {
     let first = beacon(&network);
     let next = child_of(&first, &network);
     let beacon = MockBeacon::new(network.clone());
-    beacon.state.lock().header_gate = Some(Arc::new(tokio::sync::Notify::new()));
+    beacon.state.lock().unwrap().header_gate = Some(Arc::new(tokio::sync::Notify::new()));
     let server = Server::beacon(beacon.clone()).await;
     let target = Arc::new(
         ConsensusTarget::new(
@@ -722,7 +748,7 @@ async fn stalled_consensus_import_observations_do_not_delay_new_publications() {
         )
         .unwrap(),
     );
-    let stats = Arc::new(parking_lot::Mutex::new(stats::Stats::default()));
+    let stats = Arc::new(Mutex::new(stats::Stats::default()));
     let (tx, rx) = broadcast::channel(8);
     let (stop, stop_rx) = watch::channel(false);
     let (_, mode) = watch::channel(config::Mode::Inject);
@@ -740,6 +766,7 @@ async fn stalled_consensus_import_observations_do_not_delay_new_publications() {
     until(|| {
         stats
             .lock()
+            .unwrap()
             .consensus_targets
             .get("cl")
             .is_some_and(|t| t.published == 1)
@@ -748,7 +775,7 @@ async fn stalled_consensus_import_observations_do_not_delay_new_publications() {
     tx.send(consensus_work(&next, &network)).unwrap();
     let delivered = timeout(
         Duration::from_millis(500),
-        until(|| stats.lock().consensus_targets["cl"].published == 2),
+        until(|| stats.lock().unwrap().consensus_targets["cl"].published == 2),
     )
     .await;
     stop.send_replace(true);
@@ -761,6 +788,7 @@ async fn stalled_consensus_import_observations_do_not_delay_new_publications() {
         beacon
             .state
             .lock()
+            .unwrap()
             .publications
             .iter()
             .map(|p| p.0)
@@ -770,5 +798,5 @@ async fn stalled_consensus_import_observations_do_not_delay_new_publications() {
             fixture_root(&next.data.message)
         ]
     );
-    assert_eq!(stats.lock().consensus_targets["cl"].ready, 0);
+    assert_eq!(stats.lock().unwrap().consensus_targets["cl"].ready, 0);
 }

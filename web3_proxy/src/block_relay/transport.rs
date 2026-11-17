@@ -4,12 +4,11 @@ use alloy::primitives::{Bytes, B256};
 use alloy::rpc::types::engine::{Claims, JwtSecret, PayloadStatus};
 use anyhow::{ensure, Result};
 use futures_util::StreamExt;
-use parking_lot::Mutex;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     hash::{Hash, Hasher},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use url::Url;
@@ -107,7 +106,9 @@ struct SharedReadGuard<'a> {
 
 impl Drop for SharedReadGuard<'_> {
     fn drop(&mut self) {
-        let mut reads = self.registry.lock();
+        let Ok(mut reads) = self.registry.lock() else {
+            return;
+        };
         if let Some(current) = reads.get_mut(&self.key) {
             // A late guard must not decrement or remove a replacement generation.
             if Arc::ptr_eq(&current.shared, &self.shared) {
@@ -173,7 +174,11 @@ impl BeaconHttp {
     }
     fn shared_read(&self, path: &str) -> SharedReadGuard<'_> {
         let key = path.to_owned();
-        let mut reads = self.inner.shared_reads.lock();
+        let mut reads = self
+            .inner
+            .shared_reads
+            .lock()
+            .expect("Beacon read registry lock poisoned");
         let registered = reads.entry(key.clone()).or_insert_with(|| RegisteredRead {
             shared: Arc::new(SharedRead {
                 result: tokio::sync::OnceCell::new(),
@@ -540,10 +545,10 @@ mod tests {
                 let path = format!("{prefix}{:x}", B256::with_last_byte(root));
                 let mut read = Box::pin(http.get_bytes(&path));
                 assert!(poll!(&mut read).is_pending());
-                assert_eq!(http.inner.shared_reads.lock().len(), 1);
+                assert_eq!(http.inner.shared_reads.lock().unwrap().len(), 1);
                 drop(read);
                 assert!(
-                    http.inner.shared_reads.lock().is_empty(),
+                    http.inner.shared_reads.lock().unwrap().is_empty(),
                     "abandoned {path}"
                 );
             }
@@ -586,7 +591,7 @@ mod tests {
                 read.abort();
                 assert!(read.await.unwrap_err().is_cancelled());
                 assert!(
-                    server.http.inner.shared_reads.lock().is_empty(),
+                    server.http.inner.shared_reads.lock().unwrap().is_empty(),
                     "abandoned {path}"
                 );
                 assert_permits(&server.http);
@@ -610,6 +615,7 @@ mod tests {
                 .inner
                 .shared_reads
                 .lock()
+                .unwrap()
                 .get(path)
                 .unwrap()
                 .shared
@@ -625,6 +631,7 @@ mod tests {
                 .inner
                 .shared_reads
                 .lock()
+                .unwrap()
                 .get(path)
                 .is_some_and(|current| Arc::ptr_eq(&current.shared, &original)));
             drop(held);
@@ -637,7 +644,7 @@ mod tests {
                 result.unwrap().body,
                 Some(bytes::Bytes::from_static(b"survived"))
             );
-            assert!(http.inner.shared_reads.lock().is_empty());
+            assert!(http.inner.shared_reads.lock().unwrap().is_empty());
             assert_permits(&http);
         }
     }
@@ -663,7 +670,13 @@ mod tests {
                 initializer
             };
             assert_eq!(
-                http.inner.shared_reads.lock().get("/read").unwrap().waiters,
+                http.inner
+                    .shared_reads
+                    .lock()
+                    .unwrap()
+                    .get("/read")
+                    .unwrap()
+                    .waiters,
                 1
             );
             let control = async {
@@ -684,7 +697,7 @@ mod tests {
                 Some(bytes::Bytes::from_static(b"survived"))
             );
             assert!(server.requests.try_recv().is_err());
-            assert!(http.inner.shared_reads.lock().is_empty());
+            assert!(http.inner.shared_reads.lock().unwrap().is_empty());
             assert_permits(&http);
         }
     }
@@ -699,9 +712,9 @@ mod tests {
         assert!(poll!(&mut last).is_pending());
         tokio::time::advance(READ_TIMEOUT).await;
         assert_eq!(first.await.unwrap_err().to_string(), "Beacon read timeout");
-        assert_eq!(http.inner.shared_reads.lock().len(), 1);
+        assert_eq!(http.inner.shared_reads.lock().unwrap().len(), 1);
         assert_eq!(last.await.unwrap_err().to_string(), "Beacon read timeout");
-        assert!(http.inner.shared_reads.lock().is_empty());
+        assert!(http.inner.shared_reads.lock().unwrap().is_empty());
         drop(held);
         assert_permits(&http);
     }
@@ -723,12 +736,12 @@ mod tests {
             result.unwrap().body,
             Some(bytes::Bytes::from_static(b"complete"))
         );
-        assert_eq!(http.inner.shared_reads.lock().len(), 1);
+        assert_eq!(http.inner.shared_reads.lock().unwrap().len(), 1);
         assert_eq!(
             last.await.unwrap().body,
             Some(bytes::Bytes::from_static(b"complete"))
         );
-        assert!(http.inner.shared_reads.lock().is_empty());
+        assert!(http.inner.shared_reads.lock().unwrap().is_empty());
         assert_permits(&http);
     }
 
@@ -790,7 +803,7 @@ mod tests {
                 tokio::time::resume();
             }
             drop(second);
-            assert!(server.http.inner.shared_reads.lock().is_empty());
+            assert!(server.http.inner.shared_reads.lock().unwrap().is_empty());
             assert_permits(&server.http);
         }
     }
@@ -803,21 +816,30 @@ mod tests {
         let late_waiter = http.shared_read(key);
         old.shared.result.set(Ok(BeaconRead::default())).unwrap();
         // Force a replacement while old guards exist, then drop both generations.
-        http.inner.shared_reads.lock().remove(key);
+        http.inner.shared_reads.lock().unwrap().remove(key);
         let replacement = http.shared_read(key);
         let replacement_follower = http.shared_read(key);
         drop(old);
         drop(late_waiter);
         {
-            let reads = http.inner.shared_reads.lock();
+            let reads = http.inner.shared_reads.lock().unwrap();
             let current = reads.get(key).unwrap();
             assert!(Arc::ptr_eq(&current.shared, &replacement.shared));
             assert_eq!(current.waiters, 2);
         }
         drop(replacement);
-        assert_eq!(http.inner.shared_reads.lock().get(key).unwrap().waiters, 1);
+        assert_eq!(
+            http.inner
+                .shared_reads
+                .lock()
+                .unwrap()
+                .get(key)
+                .unwrap()
+                .waiters,
+            1
+        );
         drop(replacement_follower);
-        assert!(http.inner.shared_reads.lock().is_empty());
+        assert!(http.inner.shared_reads.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -892,7 +914,7 @@ mod tests {
             }
             assert!(requests.try_recv().is_err());
             for http in [&first, &same, &other] {
-                assert!(http.inner.shared_reads.lock().is_empty());
+                assert!(http.inner.shared_reads.lock().unwrap().is_empty());
                 assert_permits(http);
             }
         }

@@ -281,7 +281,7 @@ async fn versus_returns_winner_then_finishes_selected_nodes_and_records_successe
         let answer = result(task).await;
         assert_eq!(answer, json!({"jsonrpc":"2.0","id":7,"result":"winner"}));
         request.set_response(answer.to_string().len() as u64);
-        let response_millis = request.response.lock().response_millis;
+        let response_millis = request.response.lock().unwrap().response_millis;
         assert_eq!(fleet.app.frontend_tasks.len(), 1);
         assert_eq!(fleet.counts(), [1, 1, 1, 0]);
         fleet.wait_for_active(&[0, 1, 1, 0]).await;
@@ -308,9 +308,12 @@ async fn versus_returns_winner_then_finishes_selected_nodes_and_records_successe
                 .seconds(),
             0.0
         );
-        assert_eq!(request.response.lock().response_millis, response_millis);
         assert_eq!(
-            request.response.lock().response_bytes,
+            request.response.lock().unwrap().response_millis,
+            response_millis
+        );
+        assert_eq!(
+            request.response.lock().unwrap().response_bytes,
             answer.to_string().len() as u64
         );
         assert_eq!(fleet.counts(), [1, 1, 1, 0]);
@@ -422,11 +425,12 @@ async fn versus_accepts_failure_from_stale_consensus_node(replace: bool) {
             let old = pool
                 .by_name
                 .write()
+                .unwrap()
                 .insert(queued.name.clone(), replacement.rpc.clone())
                 .unwrap();
             assert!(Arc::ptr_eq(&old, &queued));
         } else {
-            let old = pool.by_name.write().remove(&queued.name).unwrap();
+            let old = pool.by_name.write().unwrap().remove(&queued.name).unwrap();
             assert!(Arc::ptr_eq(&old, &queued));
             queued.disconnect_watch.as_ref().unwrap().send_replace(true);
         }
@@ -1051,7 +1055,7 @@ async fn known_transaction_replies_keep_hash_id_and_pending_notification_on_all_
                 let (encoded, hash) = signed_transaction();
                 let mut fleet = Fleet::with_secondary_pool(3, |app| &mut app.protected_rpcs).await;
                 if !private {
-                    fleet.app.protected_rpcs.by_name.write().clear();
+                    fleet.app.protected_rpcs.by_name.write().unwrap().clear();
                 }
                 let mut pending = fleet.app.pending_txid_firehose.subscribe();
                 let (port, server) = fleet.frontend().await;
@@ -1187,7 +1191,7 @@ async fn versus_bundler_pool_without_rankings_finishes_selected_queued_work() {
     super::test_support::with_cleanup(async {
     let mut fleet = Fleet::with_secondary_pool(4, |app| &mut app.bundler_4337_rpcs).await;
     let pool = fleet.app.bundler_4337_rpcs.clone();
-    pool.by_name.write().remove(&fleet.nodes[3].rpc.name);
+    pool.by_name.write().unwrap().remove(&fleet.nodes[3].rpc.name);
     assert!(pool.watch_ranked_rpcs.borrow().is_none());
     let slots: Vec<_> = (0..4)
         .map(|_| fleet.nodes[2].rpc.request_permits.try_acquire().unwrap())
@@ -1206,7 +1210,7 @@ async fn versus_bundler_pool_without_rankings_finishes_selected_queued_work() {
     );
     assert_eq!(fleet.app.frontend_tasks.len(), 1);
     pool.by_name
-        .write()
+        .write().unwrap()
         .insert(fleet.nodes[3].rpc.name.clone(), fleet.nodes[3].rpc.clone());
     drop(slots);
     succeed(fleet.nodes[2].next().await, entries);
@@ -1223,7 +1227,7 @@ async fn versus_bundler_rechecks_identity_and_health_before_admission() {
     for change in ["remove", "replace", "unhealthy"] {
         let mut fleet = Fleet::with_secondary_pool(4, |app| &mut app.bundler_4337_rpcs).await;
         let pool = fleet.app.bundler_4337_rpcs.clone();
-        pool.by_name.write().remove(&fleet.nodes[3].rpc.name);
+        pool.by_name.write().unwrap().remove(&fleet.nodes[3].rpc.name);
         let mut replacement =
             super::batch_tests::Harness::named(&fleet.nodes[2].rpc.name, 4, 64).await;
         let slots: Vec<_> = (0..4)
@@ -1240,11 +1244,11 @@ async fn versus_bundler_rechecks_identity_and_health_before_admission() {
         let queued = &fleet.nodes[2].rpc;
         match change {
             "remove" => {
-                pool.by_name.write().remove(&queued.name);
+                pool.by_name.write().unwrap().remove(&queued.name);
             }
             "replace" => {
                 pool.by_name
-                    .write()
+                    .write().unwrap()
                     .insert(queued.name.clone(), replacement.rpc.clone());
             }
             "unhealthy" => queued.healthy.store(false, Ordering::SeqCst),

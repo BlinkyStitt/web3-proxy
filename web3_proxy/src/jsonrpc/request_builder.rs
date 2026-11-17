@@ -11,14 +11,13 @@ use alloy::primitives::U64;
 use derivative::Derivative;
 use derive_more::From;
 use jiff::Timestamp;
-use parking_lot::Mutex;
 use serde::{ser::SerializeStruct, Serialize};
 use sonic_rs::{json, OwnedLazyValue, Value};
 use std::time::Duration;
 use std::{borrow::Cow, sync::Arc};
 use std::{
     fmt::{self, Display},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 use tokio::time::Instant;
 
@@ -189,7 +188,7 @@ impl Serialize for ValidatedRequest {
 
         state.serialize_field("elapsed", &self.start_instant.elapsed().as_secs_f32())?;
 
-        let response_lock = self.response.lock();
+        let response_lock = self.response.lock().expect("response lock poisoned");
 
         state.serialize_field("archive_request", &response_lock.archive_request)?;
 
@@ -360,7 +359,7 @@ impl ValidatedRequest {
 
     #[inline]
     pub fn backend_rpcs_used(&self) -> Vec<Arc<Web3Rpc>> {
-        let response_lock = self.response.lock();
+        let response_lock = self.response.lock().expect("response lock poisoned");
 
         response_lock.backend_rpcs.clone()
     }
@@ -388,7 +387,7 @@ impl ValidatedRequest {
         match min_block_needed {
             Some(x) => Some(x),
             None => {
-                let response_lock = self.response.lock();
+                let response_lock = self.response.lock().expect("response lock poisoned");
 
                 if response_lock.archive_request {
                     Some(U64::ZERO)
@@ -423,7 +422,7 @@ impl ValidatedRequest {
 
     pub fn set_error_response(&self, _err: &Web3ProxyError) {
         {
-            let mut response_lock = self.response.lock();
+            let mut response_lock = self.response.lock().expect("response lock poisoned");
 
             response_lock.error_response = true;
             response_lock.user_error_response = false;
@@ -444,7 +443,7 @@ impl ValidatedRequest {
         let now = Timestamp::now().as_second();
 
         {
-            let mut response_lock = self.response.lock();
+            let mut response_lock = self.response.lock().expect("response lock poisoned");
 
             // TODO: set user_error_response and error_response here instead of outside this function
 

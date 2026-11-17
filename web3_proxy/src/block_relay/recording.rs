@@ -266,6 +266,7 @@ impl Recording {
                     _ => {
                         stats
                             .lock()
+                            .expect("relay stats lock poisoned")
                             .recording
                             .failure("cannot open measurement storage");
                         retry_at = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -278,7 +279,7 @@ impl Recording {
                         match tokio::time::timeout(Duration::from_secs(2), writer.flush()).await {
                             Ok(Ok(())) => {
                                 pending_records = 0;
-                                stats.lock().recording.success(0, "measurement storage available");
+                                stats.lock().expect("relay stats lock poisoned").recording.success(0, "measurement storage available");
                                 Ok(())
                             }
                             _ => Err(()),
@@ -293,12 +294,12 @@ impl Recording {
                                 Ok(Ok(())) => Ok(()),
                                 _ => Err(()),
                             }
-                        } else { stats.lock().recording_dropped += 1; Ok(()) }
+                        } else { stats.lock().expect("relay stats lock poisoned").recording_dropped += 1; Ok(()) }
                     }
                     None => {
                         if let Some(writer) = writer.as_mut() {
                             if !matches!(tokio::time::timeout(Duration::from_secs(1), writer.flush()).await, Ok(Ok(()))) {
-                                let mut s = stats.lock();
+                                let mut s = stats.lock().expect("relay stats lock poisoned");
                                 s.recording_dropped += pending_records;
                                 s.recording.failure("measurement flush failed");
                             }
@@ -308,7 +309,7 @@ impl Recording {
                 }
             };
             if result.is_err() {
-                let mut s = stats.lock();
+                let mut s = stats.lock().expect("relay stats lock poisoned");
                 s.recording
                     .failure("measurement write failed; storage retry pending");
                 s.recording_dropped += pending_records;

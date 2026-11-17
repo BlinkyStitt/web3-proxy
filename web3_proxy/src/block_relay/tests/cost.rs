@@ -15,11 +15,13 @@ async fn local_block_before_fallback_delay_avoids_paid_http_request() {
     local
         .state
         .lock()
+        .unwrap()
         .block_gates
         .insert(root, local_gate.clone());
     // Hold the paid response so an immediate paid dispatch cannot win the race.
     paid.state
         .lock()
+        .unwrap()
         .block_gates
         .insert(root, Arc::new(tokio::sync::Notify::new()));
     let mut config = relay_config(
@@ -35,14 +37,14 @@ async fn local_block_before_fallback_delay_avoids_paid_http_request() {
     let run = tokio::spawn(relay.clone().run(1, stop.subscribe()));
     until(|| local.events.receiver_count() == 1 && paid.events.receiver_count() == 1).await;
     local.announce("block_gossip", root, block.data.message.slot);
-    until(|| local.state.lock().block_reads == [root]).await;
+    until(|| local.state.lock().unwrap().block_reads == [root]).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     local_gate.notify_one();
     until(|| relay.snapshot()["acquired"].as_u64() == Some(1)).await;
     stop.send(()).unwrap();
     run.await.unwrap();
-    assert_eq!(local.state.lock().block_reads, vec![root]);
-    assert_eq!(paid.state.lock().block_reads, Vec::<B256>::new());
+    assert_eq!(local.state.lock().unwrap().block_reads, vec![root]);
+    assert_eq!(paid.state.lock().unwrap().block_reads, Vec::<B256>::new());
 }
 
 #[tokio::test]
@@ -69,9 +71,9 @@ async fn unavailable_local_block_uses_paid_fallback_after_configured_delay() {
     until(|| local.events.receiver_count() == 1 && paid.events.receiver_count() == 1).await;
     let started = Instant::now();
     local.announce("block_gossip", root, block.data.message.slot);
-    until(|| !local.state.lock().block_reads.is_empty()).await;
+    until(|| !local.state.lock().unwrap().block_reads.is_empty()).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let early_reads = paid.state.lock().block_reads.clone();
+    let early_reads = paid.state.lock().unwrap().block_reads.clone();
     until(|| relay.snapshot()["acquired"].as_u64() == Some(1)).await;
     let elapsed = started.elapsed();
     stop.send(()).unwrap();
@@ -81,5 +83,5 @@ async fn unavailable_local_block_uses_paid_fallback_after_configured_delay() {
         elapsed >= Duration::from_millis(500),
         "fallback ran early: {elapsed:?}"
     );
-    assert_eq!(paid.state.lock().block_reads, vec![root]);
+    assert_eq!(paid.state.lock().unwrap().block_reads, vec![root]);
 }

@@ -64,7 +64,7 @@ pub(super) struct Attempt {
 impl Attempt {
     pub fn start(stats: Shared, kind: &'static str, root: B256, slot: u64, source: &str) -> Self {
         let started = Instant::now();
-        let s = stats.lock();
+        let s = stats.lock().expect("relay stats lock poisoned");
         let event = AcquisitionAttempt {
             kind,
             root,
@@ -99,9 +99,9 @@ impl Attempt {
 impl Drop for Attempt {
     fn drop(&mut self) {
         self.event.elapsed_us = stats::micros(self.started.elapsed());
-        self.stats
-            .lock()
-            .record(Record::AcquisitionAttempt(self.event.clone()));
+        if let Ok(mut stats) = self.stats.lock() {
+            stats.record(Record::AcquisitionAttempt(self.event.clone()));
+        }
     }
 }
 
@@ -258,7 +258,7 @@ pub struct Fetch {
 impl Fetch {
     pub fn start(stats: Shared, source: &str, kind: &str) -> Self {
         let (mode, generation) = {
-            let mut s = stats.lock();
+            let mut s = stats.lock().expect("relay stats lock poisoned");
             let mode = s.mode;
             s.telemetry
                 .mode(mode)
@@ -283,7 +283,9 @@ impl Fetch {
 }
 impl Drop for Fetch {
     fn drop(&mut self) {
-        let mut s = self.stats.lock();
+        let Ok(mut s) = self.stats.lock() else {
+            return;
+        };
         if s.telemetry.generation != self.generation {
             return;
         }
@@ -351,11 +353,15 @@ pub async fn monitor_resources(stats: Shared, mut stop: watch::Receiver<bool>) {
             _ = stop.changed() => return,
             _ = tick.tick() => {}
         }
-        let started_mode_epoch = stats.lock().telemetry.mode_epoch;
+        let started_mode_epoch = stats
+            .lock()
+            .expect("relay stats lock poisoned")
+            .telemetry
+            .mode_epoch;
         match tokio::task::spawn_blocking(resources).await {
             Ok(Ok(resource)) => {
                 let now = Instant::now();
-                let mut s = stats.lock();
+                let mut s = stats.lock().expect("relay stats lock poisoned");
                 let epoch = s.telemetry.mode_epoch;
                 let mode = s.mode;
                 if let Some((wall_us, cpu_us)) =
@@ -381,7 +387,7 @@ pub async fn monitor_resources(stats: Shared, mut stop: watch::Receiver<bool>) {
             }
             _ => {
                 window = CpuWindow::default();
-                let mut s = stats.lock();
+                let mut s = stats.lock().expect("relay stats lock poisoned");
                 s.telemetry.resource_errors += 1;
                 s.telemetry
                     .resource_status
@@ -443,13 +449,13 @@ mod tests {
 
     #[tokio::test]
     async fn source_race_cost_counts_cancellation_without_claiming_a_response() {
-        let stats = std::sync::Arc::new(parking_lot::Mutex::new(stats::Stats::default()));
+        let stats = std::sync::Arc::new(std::sync::Mutex::new(stats::Stats::default()));
         let mut success = Fetch::start(stats.clone(), "fast", "block");
         let cancelled = Fetch::start(stats.clone(), "slow", "block");
         success.finish(true, 420);
         drop(success);
         drop(cancelled);
-        let mut s = stats.lock();
+        let mut s = stats.lock().unwrap();
         let mode = s.telemetry.mode(Mode::Observe);
         assert_eq!(mode.sources["fast:block"].response_bytes, 420);
         assert_eq!(mode.sources["fast:block"].responses, 1);

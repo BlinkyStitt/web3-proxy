@@ -106,7 +106,7 @@ impl Fleet {
             .unwrap();
             background.abort();
             assert!(background.await.unwrap_err().is_cancelled());
-            *pool.by_name.write() = secondary_nodes
+            *pool.by_name.write().unwrap() = secondary_nodes
                 .into_iter()
                 .map(|node| (node.name.clone(), node))
                 .collect();
@@ -136,7 +136,7 @@ impl Fleet {
             .balanced_rpcs
             .watch_ranked_rpcs
             .send_replace(ranked.map(Arc::new));
-        *self.app.balanced_rpcs.by_name.write() =
+        *self.app.balanced_rpcs.by_name.write().unwrap() =
             rpcs.into_iter().map(|r| (r.name.clone(), r)).collect();
     }
     pub(super) async fn request(&self, count: usize) -> Arc<ValidatedRequest> {

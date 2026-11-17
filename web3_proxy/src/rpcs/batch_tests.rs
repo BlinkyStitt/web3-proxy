@@ -164,6 +164,7 @@ impl Harness {
         balanced_rpcs
             .by_name
             .write()
+            .unwrap()
             .insert(rpc.name.clone(), rpc.clone());
         balanced_rpcs
             .watch_ranked_rpcs
@@ -883,7 +884,7 @@ async fn batch_ws_only_backend_uses_individual_forwarding() {
     super::test_support::with_cleanup(async {
         let mut h = Harness::new(4, 64).await;
         let mut ws = WebSocketHarness::new(2).await;
-        h.app.balanced_rpcs.by_name.write().clear();
+        h.app.balanced_rpcs.by_name.write().unwrap().clear();
         add_backend(&h.app, vec![ws.rpc.clone()]);
         let task = h.start(4);
         for _ in 0..4 {
@@ -1264,6 +1265,7 @@ async fn batch_failure_uses_another_backend_without_changing_the_selected_block(
             .balanced_rpcs
             .by_name
             .write()
+            .unwrap()
             .insert(second.rpc.name.clone(), second.rpc.clone());
         first
             .app
@@ -1468,6 +1470,7 @@ fn add_backend(app: &Arc<App>, rpcs: Vec<Arc<Web3Rpc>>) {
         app.balanced_rpcs
             .by_name
             .write()
+            .unwrap()
             .insert(rpc.name.clone(), rpc.clone());
     }
     let votes = hashbrown::HashMap::from([(head.clone(), (rpcs.iter().collect(), 2))]);

@@ -262,6 +262,7 @@ impl BackendRequest {
         self.web3_request
             .response
             .lock()
+            .expect("response lock poisoned")
             .backend_rpcs
             .push(self.rpc.clone());
         self.rpc
@@ -325,7 +326,11 @@ impl BackendRequest {
 
     fn record_batch(&self, requests: &[Arc<ValidatedRequest>]) {
         for item in requests {
-            item.response.lock().backend_rpcs.push(self.rpc.clone());
+            item.response
+                .lock()
+                .expect("response lock poisoned")
+                .backend_rpcs
+                .push(self.rpc.clone());
         }
         self.rpc
             .total_requests

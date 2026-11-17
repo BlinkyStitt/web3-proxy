@@ -735,7 +735,10 @@ impl ConsensusFinder {
             let latency = observed_at
                 .checked_duration_since(first_seen)
                 .unwrap_or_default();
-            rpc.head_delay.write().record_secs(latency.as_secs_f32());
+            rpc.head_delay
+                .write()
+                .expect("RPC head delay lock poisoned")
+                .record_secs(latency.as_secs_f32());
         }
 
         // update the local mapping of rpc -> block
@@ -1296,8 +1299,8 @@ mod tests {
     use hashbrown::HashMap;
     use latency::EwmaLatency;
     use moka::future::Cache;
-    use parking_lot::RwLock;
     use std::io::{self, Write};
+    use std::sync::RwLock;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -1732,7 +1735,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            second_rpc.head_delay.read().latency(),
+            second_rpc.head_delay.read().unwrap().latency(),
             Duration::from_millis(25)
         );
 
@@ -1747,7 +1750,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            second_rpc.head_delay.read().latency(),
+            second_rpc.head_delay.read().unwrap().latency(),
             Duration::from_millis(25)
         );
     }

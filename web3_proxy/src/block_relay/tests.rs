@@ -3,7 +3,11 @@ use alloy::primitives::B256;
 use alloy_rpc_types_beacon::block::{BeaconBlock, BeaconBlockBodyElectra};
 use alloy_rpc_types_engine::ExecutionPayload;
 use sonic_rs::{json, JsonValueMutTrait, JsonValueTrait};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::{
     sync::{broadcast, watch},
     time::{timeout, Instant},
@@ -293,6 +297,7 @@ impl Worker {
             worker
                 .stats
                 .lock()
+                .unwrap()
                 .execution_targets
                 .get(&name)
                 .is_some_and(|t| t.health.connected)
@@ -304,7 +309,7 @@ impl Worker {
         let (tx, rx) = broadcast::channel(128);
         let (stop, stop_rx) = watch::channel(false);
         let (mode, mode_rx) = watch::channel(mode);
-        let stats = Arc::new(parking_lot::Mutex::new(stats::Stats {
+        let stats = Arc::new(Mutex::new(stats::Stats {
             mode: *mode.borrow(),
             ..Default::default()
         }));
@@ -337,7 +342,7 @@ impl Worker {
 #[tokio::test]
 async fn observe_never_posts_and_rpc_errors_are_not_missing_blocks() {
     let rpc = MockRpc::new();
-    rpc.state.lock().read_error = true;
+    rpc.state.lock().unwrap().read_error = true;
     let server = Server::rpc(rpc.clone()).await;
     let target = rpc.target(&server.url, "a");
     let worker = Worker::start(target.clone(), config::Mode::Observe).await;
@@ -348,13 +353,16 @@ async fn observe_never_posts_and_rpc_errors_are_not_missing_blocks() {
         target.observe(block, worker.stats.clone()).await,
         stats::Observation::default()
     );
-    let sample = worker.stats.lock().samples.back().unwrap().clone();
+    let sample = worker.stats.lock().unwrap().samples.back().unwrap().clone();
     assert_eq!(sample.last_missing_us, None);
     assert_eq!(sample.first_ready_us, None);
-    assert_eq!(worker.stats.lock().execution_targets["a"].incomplete, 1);
+    assert_eq!(
+        worker.stats.lock().unwrap().execution_targets["a"].incomplete,
+        1
+    );
     worker.finish().await;
     assert_eq!(rpc.payload_hashes(), Vec::<B256>::new());
-    assert_eq!(rpc.state.lock().bad_jwt, 0);
+    assert_eq!(rpc.state.lock().unwrap().bad_jwt, 0);
 }
 
 #[tokio::test]
@@ -366,7 +374,7 @@ async fn deduplicates_by_hash_and_keeps_competing_blocks_at_the_same_slot() {
     worker.tx.send(a.clone()).unwrap();
     worker.tx.send(a).unwrap();
     worker.tx.send(work(2, 0, 1, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 2).await;
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 2).await;
     worker.finish().await;
     let mut hashes = rpc.payload_hashes();
     hashes.sort();
@@ -374,11 +382,12 @@ async fn deduplicates_by_hash_and_keeps_competing_blocks_at_the_same_slot() {
         hashes,
         vec![B256::with_last_byte(1), B256::with_last_byte(2)]
     );
-    assert_eq!(rpc.state.lock().max_inflight, 1);
-    assert_eq!(rpc.state.lock().bad_jwt, 0);
+    assert_eq!(rpc.state.lock().unwrap().max_inflight, 1);
+    assert_eq!(rpc.state.lock().unwrap().bad_jwt, 0);
     assert!(!rpc
         .state
         .lock()
+        .unwrap()
         .methods
         .iter()
         .any(|m| m.starts_with("engine_forkchoice")));
@@ -388,9 +397,14 @@ async fn deduplicates_by_hash_and_keeps_competing_blocks_at_the_same_slot() {
 async fn repairs_cached_ancestors_oldest_first_then_retries_syncing_child_once() {
     let rpc = MockRpc::new();
     let server = Server::rpc(rpc.clone()).await;
-    rpc.state.lock().known.insert(B256::with_last_byte(1), 1);
     rpc.state
         .lock()
+        .unwrap()
+        .known
+        .insert(B256::with_last_byte(1), 1);
+    rpc.state
+        .lock()
+        .unwrap()
         .replies
         .insert(B256::with_last_byte(3), ["SYNCING", "VALID"].into());
     let worker = Worker::start(rpc.target(&server.url, "a"), config::Mode::Inject).await;
@@ -400,8 +414,11 @@ async fn repairs_cached_ancestors_oldest_first_then_retries_syncing_child_once()
         .insert(parent.payload.hash, parent.payload.clone())
         .await;
     worker.tx.send(work(3, 2, 3, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 2).await;
-    assert_eq!(worker.stats.lock().execution_targets["a"].repairs, 1);
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 2).await;
+    assert_eq!(
+        worker.stats.lock().unwrap().execution_targets["a"].repairs,
+        1
+    );
     worker.finish().await;
     assert_eq!(
         rpc.payload_hashes(),
@@ -419,13 +436,15 @@ async fn invalid_ancestor_blocks_descendants_without_retry() {
     let server = Server::rpc(rpc.clone()).await;
     rpc.state
         .lock()
+        .unwrap()
         .replies
         .insert(B256::with_last_byte(1), ["INVALID"].into());
     let worker = Worker::start(rpc.target(&server.url, "a"), config::Mode::Inject).await;
     worker.tx.send(work(1, 0, 1, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].invalid == 1).await;
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].invalid == 1).await;
     worker.tx.send(work(2, 1, 2, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].skipped_invalid_ancestor == 1).await;
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].skipped_invalid_ancestor == 1)
+        .await;
     worker.finish().await;
     assert_eq!(rpc.payload_hashes(), vec![B256::with_last_byte(1)]);
 }
@@ -439,6 +458,7 @@ async fn slow_target_does_not_delay_others_and_shutdown_drains_current_import() 
     let gate = Arc::new(tokio::sync::Notify::new());
     slow.state
         .lock()
+        .unwrap()
         .gates
         .insert(B256::with_last_byte(1), gate.clone());
     let mut a = Worker::start(slow.target(&slow_server.url, "a"), config::Mode::Inject).await;
@@ -446,8 +466,11 @@ async fn slow_target_does_not_delay_others_and_shutdown_drains_current_import() 
     let block = work(1, 0, 1, config::Mode::Inject);
     a.tx.send(block.clone()).unwrap();
     b.tx.send(block).unwrap();
-    until(|| b.stats.lock().execution_targets["b"].valid == 1 && slow.payload_hashes().len() == 1)
-        .await;
+    until(|| {
+        b.stats.lock().unwrap().execution_targets["b"].valid == 1
+            && slow.payload_hashes().len() == 1
+    })
+    .await;
     a.tx.send(work(2, 1, 2, config::Mode::Inject)).unwrap();
     a.stop.send_replace(true);
     assert!(
@@ -470,6 +493,7 @@ async fn switching_to_observe_stops_queued_injections() {
     let gate = Arc::new(tokio::sync::Notify::new());
     rpc.state
         .lock()
+        .unwrap()
         .gates
         .insert(B256::with_last_byte(1), gate.clone());
     let worker = Worker::start(rpc.target(&server.url, "a"), config::Mode::Inject).await;
@@ -478,7 +502,7 @@ async fn switching_to_observe_stops_queued_injections() {
     worker.tx.send(work(2, 1, 2, config::Mode::Inject)).unwrap();
     worker.mode.send_replace(config::Mode::Observe);
     gate.notify_one();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 1).await;
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 1).await;
     // FIFO marker: the worker must consume the queued item without posting it.
     until(|| worker.tx.is_empty()).await;
     worker.finish().await;
@@ -586,8 +610,16 @@ async fn complete_pipeline_races_decodable_sources_deduplicates_and_reloads_mode
     let payload = decode(&block, &network);
     let root = local.add(&block);
     external.add(&block);
-    a.state.lock().known.insert(payload.hash, payload.number);
-    b.state.lock().known.insert(payload.hash, payload.number);
+    a.state
+        .lock()
+        .unwrap()
+        .known
+        .insert(payload.hash, payload.number);
+    b.state
+        .lock()
+        .unwrap()
+        .known
+        .insert(payload.hash, payload.number);
     local.announce("block", root, block.data.message.slot);
     external.announce("block", root, block.data.message.slot);
     until(|| relay.samples().len() == 2).await;
@@ -612,6 +644,7 @@ async fn complete_pipeline_races_decodable_sources_deduplicates_and_reloads_mode
     external
         .state
         .lock()
+        .unwrap()
         .blocks
         .insert(root, b"invalid JSON".to_vec());
     local.announce("block_gossip", root, competitor.data.message.slot);
@@ -624,8 +657,8 @@ async fn complete_pipeline_races_decodable_sources_deduplicates_and_reloads_mode
     assert_eq!(a.payload_hashes(), vec![expected.hash]);
     assert_eq!(b.payload_hashes(), vec![expected.hash]);
     assert_eq!(relay.snapshot()["acquired"].as_u64(), Some(2));
-    assert_eq!(local.state.lock().queries.len(), 1);
-    assert_eq!(external.state.lock().queries.len(), 1);
+    assert_eq!(local.state.lock().unwrap().queries.len(), 1);
+    assert_eq!(external.state.lock().unwrap().queries.len(), 1);
     let status = relay.snapshot().to_string();
     assert!(!status.contains(&local_server.url));
     assert!(!status.contains("test-jwt"));
@@ -655,30 +688,27 @@ async fn imported_event_recovers_gossip_404_and_unsupported_gossip_falls_back() 
     until(|| beacon_source.events.receiver_count() == 1).await;
     let block = beacon(&network);
     let root = beacon_source.add(&block);
-    beacon_source.state.lock().hidden.insert(root);
+    beacon_source.state.lock().unwrap().hidden.insert(root);
     beacon_source.announce("block_gossip", root, block.data.message.slot);
-    until(|| !beacon_source.state.lock().block_reads.is_empty()).await;
+    until(|| !beacon_source.state.lock().unwrap().block_reads.is_empty()).await;
     assert_eq!(rpc.payload_hashes(), Vec::<B256>::new());
-    beacon_source.state.lock().hidden.remove(&root);
+    beacon_source.state.lock().unwrap().hidden.remove(&root);
     beacon_source.announce("block", root, block.data.message.slot);
     until(|| rpc.payload_hashes().len() == 1).await;
     shutdown.send(()).unwrap();
     run.await.unwrap();
     assert_eq!(rpc.payload_hashes(), vec![decode(&block, &network).hash]);
 
-    beacon_source.state.lock().gossip_supported = false;
+    beacon_source.state.lock().unwrap().gossip_supported = false;
     let source =
         Arc::new(source::BeaconSource::new("fallback".into(), &config.sources["local"]).unwrap());
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-    let task = tokio::spawn(source.run(
-        network,
-        tx,
-        Arc::new(parking_lot::Mutex::new(stats::Stats::default())),
-    ));
+    let task = tokio::spawn(source.run(network, tx, Arc::new(Mutex::new(stats::Stats::default()))));
     until(|| {
         beacon_source
             .state
             .lock()
+            .unwrap()
             .queries
             .last()
             .is_some_and(|q| q == "topics=block")
@@ -691,7 +721,7 @@ async fn imported_event_recovers_gossip_404_and_unsupported_gossip_falls_back() 
         .unwrap();
     assert_eq!((event.root, event.kind), (root, "block"));
     assert_eq!(
-        beacon_source.state.lock().queries.last().unwrap(),
+        beacon_source.state.lock().unwrap().queries.last().unwrap(),
         "topics=block"
     );
     task.abort();
@@ -722,11 +752,17 @@ async fn rejects_wrong_network_capability_and_bad_config_without_losing_current_
             .to_string(),
         "Beacon genesis mismatch"
     );
-    source.state.lock().network.forks.push(config::Fork {
-        name: "future".into(),
-        version: "0x07000000".parse().unwrap(),
-        epoch: 3,
-    });
+    source
+        .state
+        .lock()
+        .unwrap()
+        .network
+        .forks
+        .push(config::Fork {
+            name: "future".into(),
+            version: "0x07000000".parse().unwrap(),
+            epoch: 3,
+        });
     assert_eq!(
         beacon_source
             .validate(&network)
@@ -739,13 +775,13 @@ async fn rejects_wrong_network_capability_and_bad_config_without_losing_current_
     let rpc = MockRpc::new();
     let rpc_server = Server::rpc(rpc.clone()).await;
     let target = rpc.target(&rpc_server.url, "a");
-    rpc.state.lock().chain_id = 2;
+    rpc.state.lock().unwrap().chain_id = 2;
     assert_eq!(
         target.validate(1).await.unwrap_err().to_string(),
         "execution chain ID mismatch"
     );
-    rpc.state.lock().chain_id = 1;
-    rpc.state.lock().supports_v4 = false;
+    rpc.state.lock().unwrap().chain_id = 1;
+    rpc.state.lock().unwrap().supports_v4 = false;
     assert_eq!(
         target.validate(1).await.unwrap_err().to_string(),
         "target lacks engine_newPayloadV4"
@@ -789,6 +825,7 @@ async fn unknown_timeout_allows_new_work_without_claiming_the_lost_import() {
     let gate = Arc::new(tokio::sync::Notify::new());
     rpc.state
         .lock()
+        .unwrap()
         .gates
         .insert(B256::with_last_byte(1), gate.clone());
     let worker = Worker::start(rpc.target(&server.url, "a"), config::Mode::Inject).await;
@@ -797,17 +834,20 @@ async fn unknown_timeout_allows_new_work_without_claiming_the_lost_import() {
     worker.tx.send(block).unwrap();
     until(|| rpc.payload_hashes().len() == 1).await;
     timeout(Duration::from_secs(10), async {
-        while worker.stats.lock().execution_targets["a"].unknown != 1 {
+        while worker.stats.lock().unwrap().execution_targets["a"].unknown != 1 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
     worker.tx.send(work(2, 1, 2, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 1).await;
-    assert_eq!(worker.stats.lock().execution_targets["a"].unknown, 1);
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 1).await;
+    assert_eq!(
+        worker.stats.lock().unwrap().execution_targets["a"].unknown,
+        1
+    );
     {
-        let s = worker.stats.lock();
+        let s = worker.stats.lock().unwrap();
         let measured = &s.telemetry.modes[&config::Mode::Inject].targets["execution:a"];
         assert_eq!(measured.calls, 2);
         assert_eq!(measured.outcomes.get("unknown"), Some(&1));
@@ -816,6 +856,7 @@ async fn unknown_timeout_allows_new_work_without_claiming_the_lost_import() {
     assert!(!rpc
         .state
         .lock()
+        .unwrap()
         .known
         .contains_key(&B256::with_last_byte(1)));
     gate.notify_one();
@@ -824,7 +865,7 @@ async fn unknown_timeout_allows_new_work_without_claiming_the_lost_import() {
         rpc.payload_hashes(),
         vec![B256::with_last_byte(1), B256::with_last_byte(2)]
     );
-    assert_eq!(rpc.state.lock().max_inflight, 2);
+    assert_eq!(rpc.state.lock().unwrap().max_inflight, 2);
 }
 
 #[tokio::test]
@@ -833,13 +874,14 @@ async fn retries_syncing_child_when_missing_parent_arrives_later() {
     let server = Server::rpc(rpc.clone()).await;
     rpc.state
         .lock()
+        .unwrap()
         .replies
         .insert(B256::with_last_byte(2), ["SYNCING", "VALID"].into());
     let worker = Worker::start(rpc.target(&server.url, "a"), config::Mode::Inject).await;
     worker.tx.send(work(2, 1, 2, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].repair_gaps == 1).await;
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].repair_gaps == 1).await;
     worker.tx.send(work(1, 0, 1, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 2).await;
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 2).await;
     worker.finish().await;
     assert_eq!(
         rpc.payload_hashes(),
@@ -855,13 +897,13 @@ async fn retries_syncing_child_when_missing_parent_arrives_later() {
 async fn validates_response_hash_and_does_not_count_engine_valid_as_rpc_readiness() {
     let rpc = MockRpc::new();
     let server = Server::rpc(rpc.clone()).await;
-    rpc.state.lock().wrong_valid_hash = true;
+    rpc.state.lock().unwrap().wrong_valid_hash = true;
     let target = rpc.target(&server.url, "a");
     let worker = Worker::start(target, config::Mode::Inject).await;
     worker.tx.send(work(1, 0, 1, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].unknown == 1).await;
-    assert_eq!(worker.stats.lock().execution_targets["a"].valid, 0);
-    assert_eq!(worker.stats.lock().execution_targets["a"].ready, 0);
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].unknown == 1).await;
+    assert_eq!(worker.stats.lock().unwrap().execution_targets["a"].valid, 0);
+    assert_eq!(worker.stats.lock().unwrap().execution_targets["a"].ready, 0);
     worker.finish().await;
     assert_eq!(rpc.payload_hashes(), vec![B256::with_last_byte(1)]);
 }
@@ -870,7 +912,11 @@ async fn validates_response_hash_and_does_not_count_engine_valid_as_rpc_readines
 async fn wrong_rpc_block_identity_is_an_error_not_a_missing_block() {
     let rpc = MockRpc::new();
     let server = Server::rpc(rpc.clone()).await;
-    rpc.state.lock().known.insert(B256::with_last_byte(1), 123);
+    rpc.state
+        .lock()
+        .unwrap()
+        .known
+        .insert(B256::with_last_byte(1), 123);
     let target = rpc.target(&server.url, "a");
     assert_eq!(
         target

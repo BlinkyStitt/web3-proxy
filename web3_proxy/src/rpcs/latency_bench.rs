@@ -114,7 +114,7 @@ fn serve() {
             }
             let app = nodes[0].app.clone();
             let rpcs: Vec<_> = nodes.iter().map(|node| node.rpc.clone()).collect();
-            *app.balanced_rpcs.by_name.write() = rpcs
+            *app.balanced_rpcs.by_name.write().unwrap() = rpcs
                 .iter()
                 .map(|rpc| (rpc.name.clone(), rpc.clone()))
                 .collect();

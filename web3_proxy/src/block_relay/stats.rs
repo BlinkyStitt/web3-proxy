@@ -1,10 +1,9 @@
 use super::config::Mode;
 use hdrhistogram::Histogram;
-use parking_lot::Mutex;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 pub type Shared = Arc<Mutex<Stats>>;

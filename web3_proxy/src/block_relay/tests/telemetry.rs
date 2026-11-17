@@ -22,15 +22,15 @@ async fn acquisition_stage_records_cover_success_and_failed_reads() {
     );
     let block = beacon(&network);
     let root = source.add(&block);
-    source.state.lock().hidden.insert(root);
+    source.state.lock().unwrap().hidden.insert(root);
     let relay = BlockRelay::new();
     relay.apply(Some(&config)).await.unwrap();
     let (stop, _) = broadcast::channel(1);
     let run = tokio::spawn(relay.clone().run(1, stop.subscribe()));
     until(|| source.events.receiver_count() == 1).await;
     source.announce("block_gossip", root, block.data.message.slot);
-    until(|| source.state.lock().block_reads.len() >= 2).await;
-    source.state.lock().hidden.remove(&root);
+    until(|| source.state.lock().unwrap().block_reads.len() >= 2).await;
+    source.state.lock().unwrap().hidden.remove(&root);
     source.announce("block", root, block.data.message.slot);
     until(|| relay.snapshot()["acquired"].as_u64() == Some(1)).await;
     stop.send(()).unwrap();
@@ -94,7 +94,7 @@ async fn independent_heads_run_in_both_modes_and_identify_preexisting_canonical_
         let target = rpc.target(&server.url, "a");
         let worker = Worker::start(target.clone(), mode).await;
         let (sender, mut records) = tokio::sync::mpsc::channel(32);
-        worker.stats.lock().recorder = Some(sender);
+        worker.stats.lock().unwrap().recorder = Some(sender);
         let ws = Server::start(
             Router::new()
                 .route("/", get(heads))
@@ -106,14 +106,23 @@ async fn independent_heads_run_in_both_modes_and_identify_preexisting_canonical_
             worker.stats.clone(),
             worker.stop.subscribe(),
         ));
-        until(|| worker.stats.lock().telemetry.heads.contains_key("a")).await;
+        until(|| {
+            worker
+                .stats
+                .lock()
+                .unwrap()
+                .telemetry
+                .heads
+                .contains_key("a")
+        })
+        .await;
         assert!(
             !target.confirmed.contains_key(&B256::with_last_byte(1)),
             "telemetry must not change delivery state"
         );
         worker.tx.send(work(1, 0, 1, mode)).unwrap();
         until(|| {
-            let s = worker.stats.lock();
+            let s = worker.stats.lock().unwrap();
             let Some(target) = s
                 .telemetry
                 .modes
@@ -174,7 +183,7 @@ async fn failed_head_stream_and_full_recording_queue_do_not_delay_engine_work() 
     let target = rpc.target(&server.url, "a");
     let worker = Worker::start(target.clone(), config::Mode::Inject).await;
     let (sender, _records) = tokio::sync::mpsc::channel(1);
-    worker.stats.lock().recorder = Some(sender);
+    worker.stats.lock().unwrap().recorder = Some(sender);
     let observe = tokio::spawn(target.observe_heads(
         "invalid://secret".into(),
         worker.stats.clone(),
@@ -184,6 +193,7 @@ async fn failed_head_stream_and_full_recording_queue_do_not_delay_engine_work() 
         worker
             .stats
             .lock()
+            .unwrap()
             .telemetry
             .head_streams
             .get("a")
@@ -191,9 +201,9 @@ async fn failed_head_stream_and_full_recording_queue_do_not_delay_engine_work() 
     })
     .await;
     worker.tx.send(work(1, 0, 1, config::Mode::Inject)).unwrap();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 1).await;
-    assert!(worker.stats.lock().recording_dropped > 0);
-    assert!(!sonic_rs::to_string(&*worker.stats.lock())
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 1).await;
+    assert!(worker.stats.lock().unwrap().recording_dropped > 0);
+    assert!(!sonic_rs::to_string(&*worker.stats.lock().unwrap())
         .unwrap()
         .contains("secret"));
     worker.finish().await;
@@ -207,22 +217,23 @@ async fn submission_finishing_after_mode_change_keeps_its_origin_and_excludes_mi
     let gate = Arc::new(tokio::sync::Notify::new());
     rpc.state
         .lock()
+        .unwrap()
         .gates
         .insert(B256::with_last_byte(1), gate.clone());
     let worker = Worker::start(rpc.target(&server.url, "a"), config::Mode::Inject).await;
     let (sender, mut records) = tokio::sync::mpsc::channel(8);
-    worker.stats.lock().recorder = Some(sender);
+    worker.stats.lock().unwrap().recorder = Some(sender);
     worker.tx.send(work(1, 0, 1, config::Mode::Inject)).unwrap();
     until(|| rpc.payload_hashes().len() == 1).await;
     {
-        let mut s = worker.stats.lock();
+        let mut s = worker.stats.lock().unwrap();
         s.mode = config::Mode::Observe;
         s.telemetry.mode_epoch = 1;
         worker.mode.send_replace(config::Mode::Observe);
     }
     gate.notify_one();
-    until(|| worker.stats.lock().execution_targets["a"].valid == 1).await;
-    assert_eq!(worker.stats.lock().telemetry.mixed_mode_samples, 1);
+    until(|| worker.stats.lock().unwrap().execution_targets["a"].valid == 1).await;
+    assert_eq!(worker.stats.lock().unwrap().telemetry.mixed_mode_samples, 1);
     let start = records.try_recv().unwrap();
     let end = records.try_recv().unwrap();
     assert_eq!(start.context.mode, config::Mode::Inject);

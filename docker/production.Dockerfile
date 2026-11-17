@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # This image contains application code only. Production endpoints and secrets
 # belong in the operator's private deployment repository.
-FROM rust:slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be AS build
+FROM rust:slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS build
 WORKDIR /app
 COPY --chmod=0755 docker/apt-retry /usr/local/sbin/apt-retry
 COPY docker/80-deployment-retries /etc/apt/apt.conf.d/80-deployment-retries
@@ -53,7 +53,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     WEB3_PROXY_BUILD_REVISION="$VCS_REF" cargo build --profile faster_release --locked -p web3_proxy_cli --features mimalloc && \
     install -m 0755 target/faster_release/web3_proxy_cli /usr/local/bin/web3_proxy_cli
 
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
 COPY --chmod=0755 docker/apt-retry /usr/local/sbin/apt-retry
 COPY docker/80-deployment-retries /etc/apt/apt.conf.d/80-deployment-retries
 RUN apt-retry update && apt-retry install --no-install-recommends -y ca-certificates curl libssl3 && \

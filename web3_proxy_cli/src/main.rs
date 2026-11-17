@@ -84,18 +84,26 @@ fn optional_sentry_layer<S>(enabled: bool, filter: EnvFilter) -> impl tracing_su
 where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
-    // An unfiltered None layer can keep tracing::enabled! true even when
-    // every output rejects the event. Filter the optional layer too.
-    // This client reports errors and breadcrumbs, not transactions. Filtering
-    // spans inside SentryLayer is too late: its enter/exit callbacks still run
-    // for spans that another layer accepts. Reject spans at the layer boundary
-    // so an HTTP request never clones a Sentry hub or locks its scope per poll.
-    let events = tracing_subscriber::filter::filter_fn(move |metadata| {
-        enabled && metadata.is_event() && *metadata.level() <= tracing::Level::INFO
+    // Filter disabled layers too, so they do not enable tracing callsites.
+    let errors = tracing_subscriber::filter::filter_fn(move |metadata| {
+        enabled && metadata.is_event() && *metadata.level() == tracing::Level::ERROR
+    });
+    let breadcrumbs = tracing_subscriber::filter::filter_fn(move |metadata| {
+        enabled
+            && metadata.is_event()
+            && matches!(
+                *metadata.level(),
+                tracing::Level::WARN | tracing::Level::INFO
+            )
     });
     enabled
-        .then(sentry_tracing::layer)
-        .with_filter(filter.and(events))
+        .then(sentry_tracing::ErrorLayer::new)
+        .with_filter(filter.clone().and(errors))
+        .and_then(
+            enabled
+                .then(sentry_tracing::BreadcrumbLayer::new)
+                .with_filter(filter.and(breadcrumbs)),
+        )
 }
 
 const SENTRY_UPLOAD_TIMEOUT: Duration = Duration::from_secs(2);

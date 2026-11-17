@@ -57,7 +57,21 @@ fn serve() {
                 .with_writer(std::io::sink)
                 .with_filter(filter()),
         )
-        .with(production_layers.then(|| sentry_tracing::layer().with_filter(filter())))
+        .with(production_layers.then(|| {
+            use tracing::Level;
+            use tracing_subscriber::filter::{filter_fn, FilterExt, LevelFilter};
+
+            sentry_tracing::SpanLayer::new()
+                .with_filter(filter().and(LevelFilter::INFO))
+                .and_then(
+                    sentry_tracing::ErrorLayer::new().with_filter(filter().and(LevelFilter::ERROR)),
+                )
+                .and_then(
+                    sentry_tracing::BreadcrumbLayer::new().with_filter(filter().and(filter_fn(
+                        |metadata| matches!(*metadata.level(), Level::WARN | Level::INFO),
+                    ))),
+                )
+        }))
         .try_init()
         .unwrap();
     let workers = std::env::var("W3P_BENCH_WORKERS")

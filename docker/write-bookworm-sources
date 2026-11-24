@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+snapshot=$1
+template=$2
+sources=$3
+
+# Standalone local builds may use the base image's signed rolling sources.
+if [ -z "$snapshot" ]; then
+    exit 0
+fi
+
+if [ "${#snapshot}" -ne 16 ] || ! printf '%s\n' "$snapshot" | grep -qxE '[0-9]{8}T[0-9]{6}Z'; then
+    echo "Invalid Debian snapshot timestamp." >&2
+    exit 1
+fi
+
+sed "s/@DEBIAN_SNAPSHOT@/$snapshot/g" "$template" > "$sources"

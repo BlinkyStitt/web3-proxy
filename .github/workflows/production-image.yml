@@ -30,7 +30,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 docker/reuse_production_image.py
-      - name: Check fresh-process APT retries
+      - name: Select the Debian snapshot for this source revision
+        if: steps.reuse.outputs.digest == ''
+        id: apt
+        run: python3 docker/select_apt_snapshot.py
+      - name: Check APT and image reuse helpers
         if: steps.reuse.outputs.digest == ''
         run: python3 -m unittest discover -s docker/tests -v
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -75,6 +79,7 @@ jobs:
           tags: ghcr.io/satoshiandkin/web3-proxy:sha-${{ github.sha }}
           build-args: |
             VCS_REF=${{ github.sha }}
+            DEBIAN_SNAPSHOT=${{ steps.apt.outputs.timestamp }}
             CARGO_CACHE_SEED=${{ steps.cargo-cache.outputs.cache-hit == '' && format('{0}-{1}', github.run_id, github.run_attempt) || '' }}
           cache-from: type=gha,scope=production-amd64
           cache-to: type=gha,scope=production-amd64,mode=max

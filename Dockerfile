@@ -9,6 +9,8 @@ ENV PATH "/root/.foundry/bin:/root/.cargo/bin:${PATH}"
 ENV SHELL /bin/bash
 SHELL [ "/bin/bash", "-c" ]
 
+COPY docker/bookworm.sources /etc/apt/sources.list.d/debian.sources
+
 # install rustup dependencies
 # install clang for mold
 # also install web3-proxy system dependencies. most things are rust-only, but not everything
@@ -16,7 +18,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     set -eux -o pipefail; \
     \
-    apt-get update; \
+    apt-get update --error-on=any; \
     apt-get install --no-install-recommends --yes \
     build-essential \
     ca-certificates \

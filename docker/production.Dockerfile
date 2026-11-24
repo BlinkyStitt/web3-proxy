@@ -3,6 +3,7 @@
 # belong in the operator's private deployment repository.
 FROM rust:slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS build
 WORKDIR /app
+COPY docker/bookworm.sources /etc/apt/sources.list.d/debian.sources
 COPY --chmod=0755 docker/apt-retry /usr/local/sbin/apt-retry
 COPY docker/80-deployment-retries /etc/apt/apt.conf.d/80-deployment-retries
 RUN apt-retry update && apt-retry install --no-install-recommends -y \
@@ -54,6 +55,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     install -m 0755 target/faster_release/web3_proxy_cli /usr/local/bin/web3_proxy_cli
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
+COPY docker/bookworm.sources /etc/apt/sources.list.d/debian.sources
 COPY --chmod=0755 docker/apt-retry /usr/local/sbin/apt-retry
 COPY docker/80-deployment-retries /etc/apt/apt.conf.d/80-deployment-retries
 RUN apt-retry update && apt-retry install --no-install-recommends -y ca-certificates curl libssl3 && \

@@ -36,3 +36,4 @@
 !docker/
 !docker/apt-retry
 !docker/80-deployment-retries
+!docker/bookworm.sources

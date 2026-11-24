@@ -2,10 +2,11 @@
 # This image contains application code only. Production endpoints and secrets
 # belong in the operator's private deployment repository.
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS apt-sources
-ARG DEBIAN_SNAPSHOT
+ARG DEBIAN_ARCHIVE_SNAPSHOT
+ARG DEBIAN_SECURITY_SNAPSHOT
 RUN --mount=type=bind,source=docker/bookworm.sources,target=/tmp/bookworm.sources \
     --mount=type=bind,source=docker/write-bookworm-sources,target=/tmp/write-bookworm-sources \
-    sh /tmp/write-bookworm-sources "$DEBIAN_SNAPSHOT" /tmp/bookworm.sources \
+    sh /tmp/write-bookworm-sources "$DEBIAN_ARCHIVE_SNAPSHOT" "$DEBIAN_SECURITY_SNAPSHOT" /tmp/bookworm.sources \
       /etc/apt/sources.list.d/debian.sources && \
     cp /etc/apt/sources.list.d/debian.sources /bookworm.sources
 
@@ -75,10 +76,12 @@ RUN apt-retry update && apt-retry install --no-install-recommends -y ca-certific
 COPY --from=binary /usr/local/bin/web3_proxy_cli /usr/local/bin/web3_proxy_cli
 COPY LICENSE /usr/share/doc/web3-proxy/LICENSE
 ARG VCS_REF
-ARG DEBIAN_SNAPSHOT
+ARG DEBIAN_ARCHIVE_SNAPSHOT
+ARG DEBIAN_SECURITY_SNAPSHOT
 LABEL org.opencontainers.image.source="https://github.com/SatoshiAndKin/web3-proxy" \
       org.opencontainers.image.revision=$VCS_REF \
-      io.github.satoshiandkin.debian-snapshot=$DEBIAN_SNAPSHOT
+      io.github.satoshiandkin.debian-snapshot=$DEBIAN_ARCHIVE_SNAPSHOT \
+      io.github.satoshiandkin.debian-security-snapshot=$DEBIAN_SECURITY_SNAPSHOT
 USER 10001:10001
 WORKDIR /var/lib/web3-proxy
 ENV RUST_LOG="info,alloy_transport=error"

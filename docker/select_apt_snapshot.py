@@ -1,29 +1,32 @@
-"""Choose a Debian archive time that survives merging a tested PR head."""
+"""Select exact Debian imports and reuse those from a successful branch build."""
 
 import datetime
+import io
 import json
 import os
 import re
 import subprocess
+import zipfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-REPOSITORY = "SatoshiAndKin/web3-proxy"
+from docker.reuse_production_image import REPOSITORY, WORKFLOW, api, output
+
 SHA = re.compile(r"[0-9a-f]{40}")
-
-
-def api(path: str) -> dict | list:
-    # Both endpoints are public. The build token needs no additional permission.
-    request = Request(
-        f"https://api.github.com/repos/{REPOSITORY}/{path}",
-        headers={"Accept": "application/vnd.github+json"},
-    )
-    with urlopen(request, timeout=20) as response:
-        return json.load(response)
+TIMESTAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z")
+FILENAME = "debian-apt.json"
+RECEIPT_LIMIT = 4096
 
 
 def merged_pull_request_head(revision: str) -> str | None:
-    pulls = api(f"commits/{revision}/pulls?per_page=100")
+    # This repository is public. The build token needs no PR permission.
+    request = Request(
+        f"https://api.github.com/repos/{REPOSITORY}/commits/{revision}/pulls?per_page=100",
+        headers={"Accept": "application/vnd.github+json"},
+    )
+    with urlopen(request, timeout=20) as response:
+        pulls = json.load(response)
+
     heads = {
         pull["head"]["sha"]
         for pull in pulls
@@ -31,6 +34,7 @@ def merged_pull_request_head(revision: str) -> str | None:
         and pull["merged_at"] is not None
         and pull["base"]["ref"] == "main"
         and pull["base"]["repo"]["full_name"] == REPOSITORY
+        and (pull["head"]["repo"] or {}).get("full_name") == REPOSITORY
     }
     if len(heads) > 1:
         raise ValueError("Multiple pull request heads match the main commit.")
@@ -42,45 +46,107 @@ def merged_pull_request_head(revision: str) -> str | None:
     return head
 
 
-def debian_snapshot(revision: str, canonical_main: bool) -> tuple[str, str]:
-    if not SHA.fullmatch(revision):
-        raise ValueError("Require a full source commit.")
-    checkout = subprocess.check_output(
-        ["git", "show", "-s", "--format=%H%n%cI", "HEAD"],
-        text=True,
-        timeout=10,
-    )
-    checked_out, date = checkout.splitlines()
-    if checked_out != revision:
+def exact_archive(archive: str, requested: str) -> str:
+    prefix = f"https://snapshot.debian.org/archive/{archive}/"
+    request = Request(f"{prefix}{requested}/", method="HEAD")
+    with urlopen(request, timeout=20) as response:
+        final_url = response.geturl()
+    actual = final_url.removeprefix(prefix).removesuffix("/")
+    if not TIMESTAMP.fullmatch(actual) or actual > requested:
+        raise ValueError("Debian did not resolve a completed archive import.")
+    return actual
+
+
+def receipt_data(payload: bytes, source: str) -> tuple[str, str] | None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            if (
+                archive.namelist() != [FILENAME]
+                or archive.getinfo(FILENAME).file_size > RECEIPT_LIMIT
+            ):
+                return None
+            with archive.open(FILENAME) as file:
+                data = json.loads(file.read(RECEIPT_LIMIT))
+        if data["source"] != source:
+            return None
+        if TIMESTAMP.fullmatch(data["archive"]) and TIMESTAMP.fullmatch(data["security"]):
+            return data["archive"], data["security"]
+    except (KeyError, ValueError, TypeError, zipfile.BadZipFile):
+        return None
+    return None
+
+
+def tested_imports(source: str) -> tuple[str, str] | None:
+    runs = api(
+        "actions/workflows/production-image.yml/runs"
+        f"?event=push&head_sha={source}&status=success&per_page=10"
+    )["workflow_runs"]
+    for run in runs:
+        if (
+            run["path"] != WORKFLOW
+            or run["head_sha"] != source
+            or run["event"] != "push"
+            or run["conclusion"] != "success"
+            or run["head_repository"]["full_name"] != REPOSITORY
+        ):
+            continue
+
+        run_id = int(run["id"])
+        attempt = int(run["run_attempt"])
+        name = f"debian-apt-{source}-{attempt}"
+        artifacts = api(f"actions/runs/{run_id}/artifacts?name={name}")["artifacts"]
+        receipts = [
+            artifact for artifact in artifacts
+            if artifact["name"] == name
+            and not artifact["expired"]
+            and 0 < artifact["size_in_bytes"] <= RECEIPT_LIMIT
+        ]
+        if len(receipts) != 1:
+            continue
+
+        artifact_id = int(receipts[0]["id"])
+        payload = subprocess.check_output(
+            ["gh", "api", f"/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip"],
+            timeout=20,
+        )
+        if len(payload) > RECEIPT_LIMIT:
+            continue
+        snapshots = receipt_data(payload, source)
+        if snapshots:
+            print(f"Reuse the Debian imports from successful branch CI run {run_id}.")
+            return snapshots
+    return None
+
+
+def select(revision: str, canonical_main: bool) -> tuple[str, str]:
+    if not SHA.fullmatch(revision) or output("git", "rev-parse", "HEAD") != revision:
         raise ValueError("The checkout does not match the build revision.")
 
-    # Branch pushes use the exact tested head. GitHub records that same head
-    # against the main commit even when a PR is squash merged.
-    source = merged_pull_request_head(revision) if canonical_main else None
-    if source is not None and source != revision:
-        commit = api(f"commits/{source}")
-        if commit["sha"] != source:
-            raise ValueError("GitHub returned a different commit.")
-        date = commit["commit"]["committer"]["date"]
+    if canonical_main:
+        head = merged_pull_request_head(revision)
+        if head is not None:
+            snapshots = tested_imports(head)
+            if snapshots is not None:
+                return snapshots
+        print("No matching successful branch receipt. Validate new imports in the main build.")
 
-    selected = datetime.datetime.fromisoformat(date.replace("Z", "+00:00"))
-    selected = selected.astimezone(datetime.timezone.utc)
-    if selected > datetime.datetime.now(datetime.timezone.utc):
-        raise ValueError("The source commit date is in the future.")
-    # The archive serves the newest import at or before the requested UTC time.
-    return selected.strftime("%Y%m%dT%H%M%SZ"), source or revision
+    requested = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return exact_archive("debian", requested), exact_archive("debian-security", requested)
 
 
 def main() -> None:
-    timestamp, source = debian_snapshot(
-        os.environ["GITHUB_SHA"],
+    revision = os.environ["GITHUB_SHA"]
+    archive, security = select(
+        revision,
         os.environ["GITHUB_REPOSITORY"] == REPOSITORY
         and os.environ["GITHUB_REF"] == "refs/heads/main",
     )
-    with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-        output.write(f"timestamp={timestamp}\n")
+    receipt = {"source": revision, "archive": archive, "security": security}
+    (Path(os.environ["RUNNER_TEMP"]) / FILENAME).write_text(json.dumps(receipt) + "\n")
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output_file:
+        output_file.write(f"archive={archive}\nsecurity={security}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
-        summary.write(f"Debian APT snapshot `{timestamp}` as of source `{source}`.\n")
+        summary.write(f"Debian imports `{archive}` and security `{security}`.\n")
 
 
 if __name__ == "__main__":

@@ -22,6 +22,8 @@
 !web3_proxy/src/**/*.rs
 !web3_proxy/src/block_relay/fixtures/electra.json
 !web3_proxy/src/block_relay/fixtures/test-jwt.hex
+!web3_proxy/tests/
+!web3_proxy/tests/emudhra_tls.rs
 !web3_proxy_cli/
 !web3_proxy_cli/Cargo.toml
 !web3_proxy_cli/src/
@@ -36,3 +38,5 @@
 !docker/
 !docker/apt-retry
 !docker/80-deployment-retries
+!docker/bookworm.sources
+!docker/write-bookworm-sources

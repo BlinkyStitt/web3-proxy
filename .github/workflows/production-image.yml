@@ -30,7 +30,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 docker/reuse_production_image.py
-      - name: Check fresh-process APT retries
+      - name: Select the Debian snapshot for this source revision
+        if: steps.reuse.outputs.digest == ''
+        id: apt
+        env:
+          GH_TOKEN: ${{ github.repository == 'SatoshiAndKin/web3-proxy' && github.ref == 'refs/heads/main' && github.token || '' }}
+        run: python3 -m docker.select_apt_snapshot
+      - name: Check APT and image reuse helpers
         if: steps.reuse.outputs.digest == ''
         run: python3 -m unittest discover -s docker/tests -v
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -75,6 +81,8 @@ jobs:
           tags: ghcr.io/satoshiandkin/web3-proxy:sha-${{ github.sha }}
           build-args: |
             VCS_REF=${{ github.sha }}
+            DEBIAN_ARCHIVE_SNAPSHOT=${{ steps.apt.outputs.archive }}
+            DEBIAN_SECURITY_SNAPSHOT=${{ steps.apt.outputs.security }}
             CARGO_CACHE_SEED=${{ steps.cargo-cache.outputs.cache-hit == '' && format('{0}-{1}', github.run_id, github.run_attempt) || '' }}
           cache-from: type=gha,scope=production-amd64
           cache-to: type=gha,scope=production-amd64,mode=max
@@ -113,6 +121,14 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.reuse.outputs.digest || steps.image.outputs.digest }}
         run: printf 'Deploy ghcr.io/satoshiandkin/web3-proxy@%s\n' "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain the branch build's exact Debian imports
+        if: github.event_name == 'push' && github.repository == 'SatoshiAndKin/web3-proxy' && github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: debian-apt-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/debian-apt.json
+          if-no-files-found: error
 
       - name: Save the exact validated manifest
         if: github.event_name == 'push' && github.repository == 'SatoshiAndKin/web3-proxy' && github.ref == 'refs/heads/main'

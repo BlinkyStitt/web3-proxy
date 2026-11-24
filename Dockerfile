@@ -9,14 +9,20 @@ ENV PATH "/root/.foundry/bin:/root/.cargo/bin:${PATH}"
 ENV SHELL /bin/bash
 SHELL [ "/bin/bash", "-c" ]
 
+ARG DEBIAN_ARCHIVE_SNAPSHOT
+ARG DEBIAN_SECURITY_SNAPSHOT
+
 # install rustup dependencies
 # install clang for mold
 # also install web3-proxy system dependencies. most things are rust-only, but not everything
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    --mount=type=bind,source=docker/bookworm.sources,target=/tmp/bookworm.sources \
+    --mount=type=bind,source=docker/write-bookworm-sources,target=/tmp/write-bookworm-sources \
     set -eux -o pipefail; \
-    \
-    apt-get update; \
+    sh /tmp/write-bookworm-sources "$DEBIAN_ARCHIVE_SNAPSHOT" "$DEBIAN_SECURITY_SNAPSHOT" /tmp/bookworm.sources \
+        /etc/apt/sources.list.d/debian.sources; \
+    apt-get update --error-on=any; \
     apt-get install --no-install-recommends --yes \
     build-essential \
     ca-certificates \

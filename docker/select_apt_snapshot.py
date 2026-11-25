@@ -19,13 +19,8 @@ RECEIPT_LIMIT = 4096
 
 
 def merged_pull_request_head(revision: str) -> str | None:
-    # This repository is public. The build token needs no PR permission.
-    request = Request(
-        f"https://api.github.com/repos/{REPOSITORY}/commits/{revision}/pulls?per_page=100",
-        headers={"Accept": "application/vnd.github+json"},
-    )
-    with urlopen(request, timeout=20) as response:
-        pulls = json.load(response)
+    # Use the scoped build token instead of GitHub's shared anonymous quota.
+    pulls = api(f"commits/{revision}/pulls?per_page=100")
 
     heads = {
         pull["head"]["sha"]

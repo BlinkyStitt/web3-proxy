@@ -19,7 +19,7 @@ jobs:
       contents: read
       packages: write
       pull-requests: read
-    uses: SatoshiAndKin/web3-proxy/.github/workflows/production-image-reviewed-linux.yml@24f56e0a302230d12fbe818224cec676ae0e71b0
+    uses: SatoshiAndKin/web3-proxy/.github/workflows/production-image-reviewed-linux.yml@3d4d1ecce833a5c5b879d2ae04b7f3b204b82db2
 
   deploy:
     needs: image

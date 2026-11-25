@@ -7,7 +7,7 @@ jobs:
   image:
     runs-on:
       group: ski-ci-public-linux
-      labels: ski-kvm-public-pr
+      labels: ski-kvm-public-build
     timeout-minutes: 120
     permissions:
       actions: read

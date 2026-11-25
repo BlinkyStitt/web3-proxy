@@ -1,0 +1,81 @@
+name: Reviewed Linux production deployment
+
+on:
+  workflow_call:
+    secrets:
+      webhook_secret:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Request production deployment
+    if: >-
+      ${{ github.repository == 'SatoshiAndKin/web3-proxy' &&
+          github.repository_id == '1336582284' &&
+          github.event.repository.default_branch == 'main' &&
+          github.ref == 'refs/heads/main' && github.ref_protected &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.workflow_ref == 'SatoshiAndKin/web3-proxy/.github/workflows/production-image.yml@refs/heads/main' }}
+    runs-on:
+      group: ski-ci-public-linux
+      labels: ski-kvm-public-pr
+    timeout-minutes: 2
+    steps:
+      - name: Queue deployment on Tank
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_URL: ${{ vars.DEPLOY_WEBHOOK_URL }}
+          DEPLOY_FALLBACK_URL: ${{ vars.DEPLOY_WEBHOOK_FALLBACK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.webhook_secret }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          current=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -er .object.sha)
+          if [[ "$current" != "$COMMIT" ]]; then
+            echo 'Main advanced. Skip the superseded deployment request.'
+            exit 0
+          fi
+          : "${DEPLOY_URL:?DEPLOY_WEBHOOK_URL must be configured}"
+          : "${WEBHOOK_SECRET:?WEBHOOK_SECRET must be configured}"
+          payload=$(jq -cn --arg repository "$REPOSITORY" --arg commit "$COMMIT" \
+            '{repository: $repository, commit: $commit, targets: ["web3-proxy"]}')
+          response=$(mktemp)
+          trap 'rm -f "$response"' EXIT
+          request_key="actions-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          receipt=
+          for endpoint in "$DEPLOY_URL" "$DEPLOY_FALLBACK_URL"; do
+            [[ -n "$endpoint" ]] || continue
+            transport=0
+            status=$(curl --silent --show-error --connect-timeout 8 --max-time 25 \
+              --header "X-Webhook-Secret: $WEBHOOK_SECRET" \
+              --header "Idempotency-Key: $request_key" \
+              --header 'Content-Type: application/json' --data "$payload" \
+              --output "$response" --write-out '%{http_code}' "$endpoint") || transport=$?
+            case "$transport:$status" in
+              0:200)
+                receipt=$(jq -ce 'select(.status == "queued" and (.id | test("^[0-9a-f]{32}$")))' "$response")
+                break
+                ;;
+              6:000|7:000|28:*|52:000|55:*|56:*|0:500|0:502|0:503|0:504)
+                printf 'Temporary deployment webhook failure (curl %s, HTTP %s).\n' "$transport" "$status" >&2
+                ;;
+              *)
+                printf 'Deployment webhook rejected the request (curl %s, HTTP %s).\n' "$transport" "$status" >&2
+                exit 1
+                ;;
+            esac
+          done
+          if [[ -z "$receipt" ]]; then
+            echo 'No deployment endpoint confirmed a durable receipt.' >&2
+            exit 1
+          fi
+          printf 'Deployment queued: %s\n' "$receipt"
+          printf 'Deployment receipt: %s\n\nThe worker records completion after NUC and Lambo health checks.\n' \
+            "$receipt" >> "$GITHUB_STEP_SUMMARY"

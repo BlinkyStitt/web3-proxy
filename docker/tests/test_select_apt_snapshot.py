@@ -57,13 +57,11 @@ class SelectAptSnapshot(unittest.TestCase):
             "head": {"sha": self.head, "repo": {"full_name": snapshot.REPOSITORY}},
             "base": {"ref": "main", "repo": {"full_name": snapshot.REPOSITORY}},
         }
-        response = MagicMock()
-        response.__enter__.return_value = io.StringIO(json.dumps([pull]))
-        with patch.object(snapshot, "urlopen", return_value=response):
+        with patch.object(snapshot, "api", return_value=[pull]) as request:
             self.assertEqual(snapshot.merged_pull_request_head(self.merge), self.head)
+        request.assert_called_once_with(f"commits/{self.merge}/pulls?per_page=100")
         pull["merge_commit_sha"] = "3" * 40
-        response.__enter__.return_value = io.StringIO(json.dumps([pull]))
-        with patch.object(snapshot, "urlopen", return_value=response):
+        with patch.object(snapshot, "api", return_value=[pull]):
             self.assertIsNone(snapshot.merged_pull_request_head(self.merge))
 
     def test_checkout_must_match_the_workflow_revision(self):

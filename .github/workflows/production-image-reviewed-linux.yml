@@ -91,7 +91,9 @@ jobs:
             DEBIAN_SECURITY_SNAPSHOT=${{ steps.apt.outputs.security }}
             CARGO_CACHE_SEED=${{ steps.cargo-cache.outputs.cache-hit == '' && format('{0}-{1}', github.run_id, github.run_attempt) || '' }}
           cache-from: type=gha,scope=production-amd64
-          cache-to: type=gha,scope=production-amd64,mode=max
+          # Keep optional layer exports on branch builds. Main can deploy
+          # as soon as its tested image and durable build record are ready.
+          cache-to: ${{ github.ref != 'refs/heads/main' && 'type=gha,scope=production-amd64,mode=max,ignore-error=true' || '' }}
           provenance: true
           sbom: true
       - name: Export Cargo cache mounts
